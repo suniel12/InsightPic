@@ -58,9 +58,69 @@ class PhotoClusteringViewModel: ObservableObject {
     }
     
     func getBestPhotoFromCluster(_ cluster: PhotoCluster) -> Photo? {
-        // For now, return the first photo
-        // This will be enhanced when we integrate with quality scoring
-        return cluster.photos.first
+        guard !cluster.photos.isEmpty else { return nil }
+        
+        // Filter photos that have quality scores
+        let scoredPhotos = cluster.photos.filter { $0.overallScore != nil }
+        
+        // If no photos have scores, fall back to first photo
+        guard !scoredPhotos.isEmpty else {
+            return cluster.photos.first
+        }
+        
+        // Calculate smart scores for each photo considering content type
+        return scoredPhotos.max { photo1, photo2 in
+            let smartScore1 = calculateSmartScore(for: photo1)
+            let smartScore2 = calculateSmartScore(for: photo2)
+            return smartScore1 < smartScore2
+        }
+    }
+    
+    private func calculateSmartScore(for photo: Photo) -> Float {
+        guard let overallScore = photo.overallScore else { return 0.0 }
+        
+        let technical = overallScore.technical
+        let faces = overallScore.faces
+        let context = overallScore.context
+        
+        // Determine photo type based on face count
+        let faceCount = photo.faceQuality?.faceCount ?? 0
+        
+        let weightedScore: Float
+        
+        switch faceCount {
+        case 0:
+            // Landscape/object photos - prioritize technical quality and composition
+            weightedScore = technical * 0.6 + context * 0.3 + faces * 0.1
+            
+        case 1:
+            // Single person portraits - balance technical and face quality
+            weightedScore = technical * 0.4 + faces * 0.4 + context * 0.2
+            
+        case 2...5:
+            // Small group photos - prioritize face quality
+            weightedScore = faces * 0.5 + technical * 0.3 + context * 0.2
+            
+        default:
+            // Large group photos - heavily prioritize face quality
+            weightedScore = faces * 0.6 + technical * 0.2 + context * 0.2
+        }
+        
+        // Bonus for golden hour timing (if we have timestamp)
+        var finalScore = weightedScore
+        if isGoldenHour(photo.timestamp) {
+            finalScore += 0.1 // 10% bonus for golden hour photos
+        }
+        
+        return min(finalScore, 1.0) // Cap at 1.0
+    }
+    
+    private func isGoldenHour(_ timestamp: Date) -> Bool {
+        let calendar = Calendar.current
+        let hour = calendar.component(.hour, from: timestamp)
+        
+        // Golden hour: 6-8 AM or 6-8 PM
+        return (hour >= 6 && hour <= 8) || (hour >= 18 && hour <= 20)
     }
     
     func getClusterForPhoto(_ photo: Photo) -> PhotoCluster? {
@@ -150,29 +210,199 @@ class PhotoClusteringViewModel: ObservableObject {
     // MARK: - Recommendations
     
     func getRecommendedPhotos(count: Int = 10) -> [Photo] {
-        // Get best photo from each cluster, sorted by cluster quality
-        let bestFromEachCluster = sortedClustersByQuality().compactMap { cluster in
-            getBestPhotoFromCluster(cluster)
-        }
+        // Step 1: Get best photo from each cluster (cluster winners)
+        let clusterWinners = getClusterWinners()
         
-        return Array(bestFromEachCluster.prefix(count))
+        // Step 2: From cluster winners, select the best overall photos with diversity
+        return selectBestWithDiversity(from: clusterWinners, count: count)
     }
     
     func getDiverseRecommendations(count: Int = 10) -> [Photo] {
-        // Prioritize larger clusters and time diversity
-        var recommendations: [Photo] = []
-        let sortedBySize = sortedClustersBySize()
+        // Step 1: Get best photo from each cluster (cluster winners)
+        let clusterWinners = getClusterWinners()
         
-        // Take one photo from each cluster, starting with largest
-        for cluster in sortedBySize {
-            if recommendations.count >= count { break }
+        // Step 2: Prioritize diversity over pure quality
+        return selectWithMaxDiversity(from: clusterWinners, count: count)
+    }
+    
+    private func getClusterWinners() -> [Photo] {
+        // Get the best photo from each cluster
+        return clusters.compactMap { cluster in
+            getBestPhotoFromCluster(cluster)
+        }
+    }
+    
+    private func selectBestWithDiversity(from photos: [Photo], count: Int) -> [Photo] {
+        guard !photos.isEmpty else { return [] }
+        
+        var selectedPhotos: [Photo] = []
+        var remainingPhotos = photos
+        
+        // First, select the highest quality photo overall
+        if let bestPhoto = remainingPhotos.max(by: { 
+            calculateSmartScore(for: $0) < calculateSmartScore(for: $1) 
+        }) {
+            selectedPhotos.append(bestPhoto)
+            remainingPhotos.removeAll { $0.id == bestPhoto.id }
+        }
+        
+        // Then select remaining photos balancing quality and diversity
+        while selectedPhotos.count < count && !remainingPhotos.isEmpty {
+            let nextPhoto = findMostDiverseQualityPhoto(
+                from: remainingPhotos, 
+                alreadySelected: selectedPhotos
+            )
             
-            if let bestPhoto = getBestPhotoFromCluster(cluster) {
-                recommendations.append(bestPhoto)
+            if let photo = nextPhoto {
+                selectedPhotos.append(photo)
+                remainingPhotos.removeAll { $0.id == photo.id }
+            } else {
+                break
             }
         }
         
-        return recommendations
+        return selectedPhotos
+    }
+    
+    private func selectWithMaxDiversity(from photos: [Photo], count: Int) -> [Photo] {
+        guard !photos.isEmpty else { return [] }
+        
+        var selectedPhotos: [Photo] = []
+        let remainingPhotos = photos
+        
+        // Group photos by content type for diversity
+        let landscapePhotos = remainingPhotos.filter { ($0.faceQuality?.faceCount ?? 0) == 0 }
+        let portraitPhotos = remainingPhotos.filter { ($0.faceQuality?.faceCount ?? 0) == 1 }
+        let groupPhotos = remainingPhotos.filter { ($0.faceQuality?.faceCount ?? 0) > 1 }
+        
+        // Distribute selections across content types
+        let targetCounts = calculateDiversityTargets(
+            landscapes: landscapePhotos.count,
+            portraits: portraitPhotos.count,
+            groups: groupPhotos.count,
+            totalCount: count
+        )
+        
+        // Select best from each category
+        selectedPhotos.append(contentsOf: selectBestFromCategory(landscapePhotos, count: targetCounts.landscapes))
+        selectedPhotos.append(contentsOf: selectBestFromCategory(portraitPhotos, count: targetCounts.portraits))
+        selectedPhotos.append(contentsOf: selectBestFromCategory(groupPhotos, count: targetCounts.groups))
+        
+        // Fill remaining slots with highest quality remaining photos
+        let remaining = photos.filter { photo in !selectedPhotos.contains { $0.id == photo.id } }
+        let additionalCount = count - selectedPhotos.count
+        if additionalCount > 0 {
+            let bestRemaining = remaining
+                .sorted { calculateSmartScore(for: $0) > calculateSmartScore(for: $1) }
+                .prefix(additionalCount)
+            selectedPhotos.append(contentsOf: bestRemaining)
+        }
+        
+        return Array(selectedPhotos.prefix(count))
+    }
+    
+    private func findMostDiverseQualityPhoto(from photos: [Photo], alreadySelected: [Photo]) -> Photo? {
+        return photos.max { photo1, photo2 in
+            let diversity1 = calculateDiversityScore(photo1, compared: alreadySelected)
+            let diversity2 = calculateDiversityScore(photo2, compared: alreadySelected)
+            let quality1 = calculateSmartScore(for: photo1)
+            let quality2 = calculateSmartScore(for: photo2)
+            
+            // Weight diversity and quality equally
+            let combined1 = diversity1 * 0.5 + quality1 * 0.5
+            let combined2 = diversity2 * 0.5 + quality2 * 0.5
+            
+            return combined1 < combined2
+        }
+    }
+    
+    private func calculateDiversityScore(_ photo: Photo, compared selectedPhotos: [Photo]) -> Float {
+        guard !selectedPhotos.isEmpty else { return 1.0 }
+        
+        var diversityScore: Float = 0.0
+        
+        // Content type diversity
+        let photoFaceCount = photo.faceQuality?.faceCount ?? 0
+        let hasLandscape = selectedPhotos.contains { ($0.faceQuality?.faceCount ?? 0) == 0 }
+        let hasPortrait = selectedPhotos.contains { ($0.faceQuality?.faceCount ?? 0) == 1 }
+        let hasGroup = selectedPhotos.contains { ($0.faceQuality?.faceCount ?? 0) > 1 }
+        
+        switch photoFaceCount {
+        case 0: diversityScore += hasLandscape ? 0.0 : 0.4
+        case 1: diversityScore += hasPortrait ? 0.0 : 0.4
+        default: diversityScore += hasGroup ? 0.0 : 0.4
+        }
+        
+        // Time diversity (prefer photos from different time periods)
+        let timeDiversity = calculateTimeDiversity(photo, compared: selectedPhotos)
+        diversityScore += timeDiversity * 0.3
+        
+        // Quality uniqueness (prefer photos that stand out)
+        let qualityUniqueness = calculateQualityUniqueness(photo, compared: selectedPhotos)
+        diversityScore += qualityUniqueness * 0.3
+        
+        return min(diversityScore, 1.0)
+    }
+    
+    private func calculateTimeDiversity(_ photo: Photo, compared selectedPhotos: [Photo]) -> Float {
+        let photoTime = photo.timestamp
+        let minTimeDifference: TimeInterval = 3600 // 1 hour
+        
+        for selectedPhoto in selectedPhotos {
+            let timeDifference = abs(photoTime.timeIntervalSince(selectedPhoto.timestamp))
+            if timeDifference < minTimeDifference {
+                return 0.0 // Too close in time
+            }
+        }
+        
+        return 1.0 // Good time diversity
+    }
+    
+    private func calculateQualityUniqueness(_ photo: Photo, compared selectedPhotos: [Photo]) -> Float {
+        let photoScore = calculateSmartScore(for: photo)
+        let tolerance: Float = 0.1
+        
+        for selectedPhoto in selectedPhotos {
+            let selectedScore = calculateSmartScore(for: selectedPhoto)
+            if abs(photoScore - selectedScore) < tolerance {
+                return 0.0 // Too similar in quality
+            }
+        }
+        
+        return 1.0 // Unique quality level
+    }
+    
+    private func calculateDiversityTargets(landscapes: Int, portraits: Int, groups: Int, totalCount: Int) -> (landscapes: Int, portraits: Int, groups: Int) {
+        let totalAvailable = landscapes + portraits + groups
+        guard totalAvailable > 0 else { return (0, 0, 0) }
+        
+        // Aim for balanced representation, but respect availability
+        let landscapeRatio = min(0.4, Double(landscapes) / Double(totalAvailable))
+        let portraitRatio = min(0.3, Double(portraits) / Double(totalAvailable))
+        let groupRatio = min(0.3, Double(groups) / Double(totalAvailable))
+        
+        let landscapeTarget = max(1, min(landscapes, Int(Double(totalCount) * landscapeRatio)))
+        let portraitTarget = max(1, min(portraits, Int(Double(totalCount) * portraitRatio)))
+        let groupTarget = max(1, min(groups, Int(Double(totalCount) * groupRatio)))
+        
+        // Adjust if we exceed total count
+        let total = landscapeTarget + portraitTarget + groupTarget
+        if total > totalCount {
+            // Proportionally reduce
+            let factor = Double(totalCount) / Double(total)
+            return (
+                max(0, Int(Double(landscapeTarget) * factor)),
+                max(0, Int(Double(portraitTarget) * factor)),
+                max(0, Int(Double(groupTarget) * factor))
+            )
+        }
+        
+        return (landscapeTarget, portraitTarget, groupTarget)
+    }
+    
+    private func selectBestFromCategory(_ photos: [Photo], count: Int) -> [Photo] {
+        let sorted = photos.sorted { calculateSmartScore(for: $0) > calculateSmartScore(for: $1) }
+        return Array(sorted.prefix(count))
     }
     
     // MARK: - Error Handling
