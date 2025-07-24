@@ -29,24 +29,9 @@
 		856116DA2E32A523005F9E99 /* InsightPicUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = InsightPicUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		856116FD2E32AA0F005F9E99 /* Exceptions for "InsightPic" folder in "InsightPic" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Persistence.swift,
-				Services/Persistence/CoreDataStack.swift,
-				Services/Persistence/PhotoDataRepository.swift,
-			);
-			target = 856116BC2E32A522005F9E99 /* InsightPic */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		856116BF2E32A522005F9E99 /* InsightPic */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				856116FD2E32AA0F005F9E99 /* Exceptions for "InsightPic" folder in "InsightPic" target */,
-			);
 			path = InsightPic;
 			sourceTree = "<group>";
 		};

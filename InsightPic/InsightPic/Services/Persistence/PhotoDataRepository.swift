@@ -262,7 +262,7 @@ class PhotoDataRepository: PhotoDataRepositoryProtocol {
     func loadPhotosWithoutScores() async throws -> [Photo] {
         return try await coreDataStack.performBackgroundTask { context in
             let fetchRequest: NSFetchRequest<PhotoEntity> = PhotoEntity.fetchRequest()
-            fetchRequest.predicate = NSPredicate(format: "scores == nil")
+            fetchRequest.predicate = NSPredicate(format: "overallScore == nil")
             fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \PhotoEntity.timestamp, ascending: false)]
             
             let photoEntities = try context.fetch(fetchRequest)
