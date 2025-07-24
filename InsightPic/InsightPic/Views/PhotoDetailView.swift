@@ -174,6 +174,7 @@ struct EnhancedImageView: View {
         Image(uiImage: image)
             .resizable()
             .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .scaleEffect(currentScale * dragScale)
             .offset(x: currentOffset.width + dragOffset.width, y: currentOffset.height + dragOffset.height)
             .gesture(
