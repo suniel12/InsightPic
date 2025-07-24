@@ -301,80 +301,73 @@ struct PhotoInfoView: View {
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    // Basic Info Section
-                    InfoSection(title: "Basic Information") {
-                        InfoRow(label: "Date Taken", value: photo.timestamp.formatted(date: .abbreviated, time: .shortened))
-                        InfoRow(label: "Asset ID", value: photo.assetIdentifier)
-                        
-                        if let location = photo.location {
-                            InfoRow(label: "Location", value: String(format: "%.6f, %.6f", location.coordinate.latitude, location.coordinate.longitude))
-                        } else {
-                            InfoRow(label: "Location", value: "Not available")
-                        }
-                    }
+        NavigationStack {
+            List {
+                Section("Details") {
+                    LabeledContent("Date", value: photo.timestamp.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Dimensions", value: "\(photo.metadata.width) × \(photo.metadata.height)")
                     
-                    // Technical Details Section
-                    InfoSection(title: "Technical Details") {
-                        InfoRow(label: "Dimensions", value: "\(photo.metadata.width) × \(photo.metadata.height)")
-                        
+                    if let location = photo.location {
+                        LabeledContent("Location", value: String(format: "%.4f, %.4f", location.coordinate.latitude, location.coordinate.longitude))
+                    }
+                }
+                
+                if hasMetadata {
+                    Section("Camera") {
                         if let camera = photo.metadata.cameraModel {
-                            InfoRow(label: "Camera", value: camera)
+                            LabeledContent("Model", value: camera)
                         }
                         
                         if let focalLength = photo.metadata.focalLength {
-                            InfoRow(label: "Focal Length", value: String(format: "%.1fmm", focalLength))
+                            LabeledContent("Focal Length", value: String(format: "%.1fmm", focalLength))
                         }
                         
                         if let aperture = photo.metadata.fNumber {
-                            InfoRow(label: "Aperture", value: String(format: "f/%.1f", aperture))
+                            LabeledContent("Aperture", value: String(format: "f/%.1f", aperture))
                         }
                         
                         if let shutterSpeed = photo.metadata.exposureTime {
-                            InfoRow(label: "Shutter Speed", value: formatShutterSpeed(shutterSpeed))
+                            LabeledContent("Shutter", value: formatShutterSpeed(shutterSpeed))
                         }
                         
                         if let iso = photo.metadata.iso {
-                            InfoRow(label: "ISO", value: "\(iso)")
-                        }
-                    }
-                    
-                    // Quality Scores Section
-                    if let technicalQuality = photo.technicalQuality {
-                        InfoSection(title: "Quality Analysis") {
-                            InfoRow(label: "Sharpness", value: "\(Int(technicalQuality.sharpness * 100))%")
-                            InfoRow(label: "Exposure", value: "\(Int(technicalQuality.exposure * 100))%")
-                            InfoRow(label: "Composition", value: "\(Int(technicalQuality.composition * 100))%")
-                            InfoRow(label: "Overall Technical", value: "\(Int(technicalQuality.overall * 100))%")
-                        }
-                    }
-                    
-                    // Face Analysis Section
-                    if let faceQuality = photo.faceQuality, faceQuality.faceCount > 0 {
-                        InfoSection(title: "Face Analysis") {
-                            InfoRow(label: "Faces Detected", value: "\(faceQuality.faceCount)")
-                            InfoRow(label: "Face Quality", value: "\(Int(faceQuality.averageScore * 100))%")
-                            InfoRow(label: "Eyes Open", value: faceQuality.eyesOpen ? "Yes" : "No")
-                            InfoRow(label: "Good Expressions", value: faceQuality.goodExpressions ? "Yes" : "No")
-                            InfoRow(label: "Optimal Size", value: faceQuality.optimalSizes ? "Yes" : "No")
-                        }
-                    }
-                    
-                    // Overall Score Section
-                    if let overallScore = photo.overallScore {
-                        InfoSection(title: "Overall Assessment") {
-                            InfoRow(label: "Technical Score", value: "\(Int(overallScore.technical * 100))%")
-                            InfoRow(label: "Face Score", value: "\(Int(overallScore.faces * 100))%")
-                            InfoRow(label: "Context Score", value: "\(Int(overallScore.context * 100))%")
-                            InfoRow(label: "Final Score", value: "\(Int(overallScore.overall * 100))%", highlight: true)
+                            LabeledContent("ISO", value: "\(iso)")
                         }
                     }
                 }
-                .padding()
+                
+                if let technicalQuality = photo.technicalQuality {
+                    Section("Quality") {
+                        LabeledContent("Sharpness", value: "\(Int(technicalQuality.sharpness * 100))%")
+                        LabeledContent("Exposure", value: "\(Int(technicalQuality.exposure * 100))%")
+                        LabeledContent("Composition", value: "\(Int(technicalQuality.composition * 100))%")
+                        LabeledContent("Overall", value: "\(Int(technicalQuality.overall * 100))%")
+                    }
+                }
+                
+                if let faceQuality = photo.faceQuality, faceQuality.faceCount > 0 {
+                    Section("Faces") {
+                        LabeledContent("Count", value: "\(faceQuality.faceCount)")
+                        LabeledContent("Quality", value: "\(Int(faceQuality.averageScore * 100))%")
+                        LabeledContent("Eyes Open", value: faceQuality.eyesOpen ? "Yes" : "No")
+                        LabeledContent("Expressions", value: faceQuality.goodExpressions ? "Good" : "Fair")
+                    }
+                }
+                
+                if let overallScore = photo.overallScore {
+                    Section("Assessment") {
+                        LabeledContent("Technical", value: "\(Int(overallScore.technical * 100))%")
+                        LabeledContent("Faces", value: "\(Int(overallScore.faces * 100))%")
+                        LabeledContent("Context", value: "\(Int(overallScore.context * 100))%")
+                        LabeledContent("Final Score") {
+                            Text("\(Int(overallScore.overall * 100))%")
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                }
             }
-            .navigationTitle("Photo Details")
+            .navigationTitle("Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -384,6 +377,14 @@ struct PhotoInfoView: View {
                 }
             }
         }
+    }
+    
+    private var hasMetadata: Bool {
+        photo.metadata.cameraModel != nil || 
+        photo.metadata.focalLength != nil || 
+        photo.metadata.fNumber != nil || 
+        photo.metadata.exposureTime != nil || 
+        photo.metadata.iso != nil
     }
     
     private func formatShutterSpeed(_ speed: Double) -> String {
@@ -396,60 +397,6 @@ struct PhotoInfoView: View {
     }
 }
 
-// MARK: - Info Section
-
-struct InfoSection<Content: View>: View {
-    let title: String
-    let content: Content
-    
-    init(title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-                .foregroundColor(.primary)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                content
-            }
-            .padding()
-            .background(Color(.systemGray6))
-            .cornerRadius(12)
-        }
-    }
-}
-
-// MARK: - Info Row
-
-struct InfoRow: View {
-    let label: String
-    let value: String
-    let highlight: Bool
-    
-    init(label: String, value: String, highlight: Bool = false) {
-        self.label = label
-        self.value = value
-        self.highlight = highlight
-    }
-    
-    var body: some View {
-        HStack {
-            Text(label)
-                .foregroundColor(.secondary)
-            
-            Spacer()
-            
-            Text(value)
-                .fontWeight(highlight ? .semibold : .regular)
-                .foregroundColor(highlight ? .blue : .primary)
-        }
-        .font(.subheadline)
-    }
-}
 
 // MARK: - Preview
 

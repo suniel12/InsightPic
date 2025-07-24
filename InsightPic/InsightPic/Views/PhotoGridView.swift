@@ -3,12 +3,68 @@ import SwiftUI
 struct PhotoGridView: View {
     @StateObject private var viewModel = PhotoLibraryViewModel()
     @State private var showingSettings = false
+    @State private var showingFilter = false
+    @State private var qualityFilter: QualityFilter = .all
     
     private let columns = [
         GridItem(.flexible(), spacing: 1),
         GridItem(.flexible(), spacing: 1),
         GridItem(.flexible(), spacing: 1)
     ]
+    
+    enum QualityFilter: String, CaseIterable, Hashable {
+        case all = "All Photos"
+        case excellent = "Excellent (80%+)"
+        case good = "Good (60%+)"
+        case fair = "Fair (40%+)"
+        case needsWork = "Needs Work (<40%)"
+        
+        var threshold: Float? {
+            switch self {
+            case .all: return nil
+            case .excellent: return 0.8
+            case .good: return 0.6
+            case .fair: return 0.4
+            case .needsWork: return 0.0
+            }
+        }
+        
+        var upperThreshold: Float? {
+            switch self {
+            case .needsWork: return 0.4
+            default: return nil
+            }
+        }
+    }
+    
+    private var filteredPhotos: [Photo] {
+        let photos = viewModel.photos
+        
+        switch qualityFilter {
+        case .all:
+            return photos
+        case .excellent:
+            return photos.filter { photo in
+                guard let score = photo.overallScore?.overall else { return false }
+                return score >= 0.8
+            }
+        case .good:
+            return photos.filter { photo in
+                guard let score = photo.overallScore?.overall else { return false }
+                return score >= 0.6
+            }
+        case .fair:
+            return photos.filter { photo in
+                guard let score = photo.overallScore?.overall else { return false }
+                return score >= 0.4 && score < 0.6
+            }
+        case .needsWork:
+            return photos.filter { photo in
+                guard let score = photo.overallScore?.overall else { return true }
+                return score < 0.4
+            }
+        }
+    }
     
     var body: some View {
         NavigationStack {
@@ -22,13 +78,20 @@ struct PhotoGridView: View {
                         EmptyStateView(viewModel: viewModel)
                     }
                 } else {
-                    PhotoGrid(viewModel: viewModel, columns: columns)
+                    FilteredPhotoGrid(photos: filteredPhotos, viewModel: viewModel, columns: columns)
                 }
             }
-            .navigationTitle("Photos")
+            .navigationTitle(qualityFilter == .all ? "Photos" : qualityFilter.rawValue)
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if !viewModel.photos.isEmpty {
+                        Button(action: { showingFilter = true }) {
+                            Image(systemName: qualityFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                                .font(.system(size: 17, weight: .medium))
+                        }
+                    }
+                    
                     Button(action: { showingSettings = true }) {
                         Image(systemName: "ellipsis.circle")
                             .font(.system(size: 17, weight: .medium))
@@ -37,6 +100,9 @@ struct PhotoGridView: View {
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $showingFilter) {
+                QualityFilterView(selectedFilter: $qualityFilter, photoCount: viewModel.photos.count, viewModel: viewModel)
             }
             .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") {
@@ -58,20 +124,22 @@ struct PermissionRequestView: View {
     let viewModel: PhotoLibraryViewModel
     
     var body: some View {
-        VStack(spacing: 30) {
-            Image(systemName: "photo.on.rectangle.angled")
-                .font(.system(size: 80))
-                .foregroundColor(.blue)
-            
-            VStack(spacing: 16) {
-                Text("Access Your Photos")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+        VStack(spacing: 40) {
+            VStack(spacing: 20) {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 64, weight: .light))
+                    .foregroundStyle(.tertiary)
                 
-                Text("InsightPic needs access to your photo library to analyze and curate your best photos.")
-                    .font(.body)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(.secondary)
+                VStack(spacing: 8) {
+                    Text("Access Your Photos")
+                        .font(.title3)
+                        .fontWeight(.medium)
+                    
+                    Text("Analyze and curate your best photos")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             
             Button(action: {
@@ -79,17 +147,18 @@ struct PermissionRequestView: View {
                     await viewModel.requestPhotoLibraryAccess()
                 }
             }) {
-                Text("Allow Photo Access")
-                    .font(.headline)
+                Text("Continue")
+                    .font(.body)
+                    .fontWeight(.medium)
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .cornerRadius(12)
+                    .padding(.vertical, 16)
+                    .background(Color.accentColor)
+                    .cornerRadius(10)
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 20)
         }
-        .padding()
+        .padding(.horizontal, 40)
     }
 }
 
@@ -99,23 +168,26 @@ struct LoadingView: View {
     @ObservedObject var viewModel: PhotoLibraryViewModel
     
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 24) {
             ProgressView(value: viewModel.loadingProgress, total: 1.0)
-                .progressViewStyle(LinearProgressViewStyle())
-                .frame(height: 8)
-                .scaleEffect(x: 1, y: 2, anchor: .center)
+                .progressViewStyle(LinearProgressViewStyle(tint: .accentColor))
+                .frame(maxWidth: 200)
             
-            Text(viewModel.loadingText)
-                .font(.headline)
-                .multilineTextAlignment(.center)
-            
-            if viewModel.loadingProgress > 0 {
-                Text("\(Int(viewModel.loadingProgress * 100))% Complete")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            VStack(spacing: 6) {
+                Text(viewModel.loadingText)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .multilineTextAlignment(.center)
+                
+                if viewModel.loadingProgress > 0 {
+                    Text("\(Int(viewModel.loadingProgress * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
             }
         }
-        .padding()
+        .padding(.horizontal, 40)
     }
 }
 
@@ -125,30 +197,33 @@ struct EmptyStateView: View {
     let viewModel: PhotoLibraryViewModel
     
     var body: some View {
-        VStack(spacing: 30) {
-            Image(systemName: "photo.badge.plus")
-                .font(.system(size: 80))
-                .foregroundColor(.gray)
-            
+        VStack(spacing: 32) {
             VStack(spacing: 16) {
-                Text("No Photos Found")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+                Image(systemName: "photo.badge.plus")
+                    .font(.system(size: 56, weight: .light))
+                    .foregroundStyle(.tertiary)
                 
-                Text("Make sure you have photos in your library and have granted photo access.")
-                    .font(.body)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(.secondary)
+                VStack(spacing: 6) {
+                    Text("No Photos")
+                        .font(.title3)
+                        .fontWeight(.medium)
+                    
+                    Text("Check your photo library and permissions")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             
-            Button("Reload Photos") {
+            Button("Try Again") {
                 Task {
                     await viewModel.loadPhotosFromLibrary()
                 }
             }
             .buttonStyle(.bordered)
+            .controlSize(.regular)
         }
-        .padding()
+        .padding(.horizontal, 40)
     }
 }
 
@@ -159,9 +234,19 @@ struct PhotoGrid: View {
     let columns: [GridItem]
     
     var body: some View {
+        FilteredPhotoGrid(photos: viewModel.photos, viewModel: viewModel, columns: columns)
+    }
+}
+
+struct FilteredPhotoGrid: View {
+    let photos: [Photo]
+    @ObservedObject var viewModel: PhotoLibraryViewModel
+    let columns: [GridItem]
+    
+    var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 1) {
-                ForEach(viewModel.photos) { photo in
+                ForEach(photos) { photo in
                     PhotoThumbnailView(photo: photo, viewModel: viewModel)
                         .aspectRatio(1, contentMode: .fill)
                         .clipped()
@@ -245,67 +330,66 @@ struct SettingsView: View {
     @State private var showingPhotoAnalysis = false
     @State private var showingPhotoScoring = false
     @State private var showingPhotoClustering = false
+    @State private var showingScoredPhotos = false
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
-                Section("Photo Library") {
-                    HStack {
-                        Text("Total Photos")
-                        Spacer()
-                        Text("\(viewModel.totalPhotosCount)")
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    HStack {
-                        Text("Photos with Location")
-                        Spacer()
-                        Text("\(viewModel.photosWithLocationCount)")
-                            .foregroundColor(.secondary)
-                    }
+                Section {
+                    LabeledContent("Photos", value: "\(viewModel.totalPhotosCount)")
+                    LabeledContent("With Location", value: "\(viewModel.photosWithLocationCount)")
                     
                     let dateRange = viewModel.dateRange
                     if let startDate = dateRange.start,
                        let endDate = dateRange.end {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Date Range")
+                        LabeledContent("Date Range") {
                             Text("\(startDate.formatted(date: .abbreviated, time: .omitted)) - \(endDate.formatted(date: .abbreviated, time: .omitted))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(.secondary)
                         }
                     }
+                } header: {
+                    Text("Library")
                 }
                 
-                Section("AI Features") {
-                    Button("Analyze Photo Quality") {
+                Section {
+                    Button("Analyze Quality") {
                         showingPhotoAnalysis = true
                     }
                     .disabled(viewModel.photos.isEmpty)
                     
-                    Button("Quality Scoring & Assessment") {
+                    Button("Score Photos") {
                         showingPhotoScoring = true
                     }
                     .disabled(viewModel.photos.isEmpty)
                     
-                    Button("Cluster Similar Photos") {
+                    Button("View Scored Photos") {
+                        showingScoredPhotos = true
+                    }
+                    .disabled(viewModel.photos.isEmpty)
+                    
+                    Button("Find Similar") {
                         showingPhotoClustering = true
                     }
                     .disabled(viewModel.photos.isEmpty)
+                } header: {
+                    Text("AI Features")
                 }
                 
-                Section("Actions") {
-                    Button("Filter Recent Photos (30 days)") {
+                Section {
+                    Button("Recent (30 days)") {
                         viewModel.filterRecentPhotos(days: 30)
                         dismiss()
                     }
                     
-                    Button("Filter Photos with Location") {
+                    Button("With Location") {
                         viewModel.filterPhotosWithLocation()
                         dismiss()
                     }
+                } header: {
+                    Text("Filters")
                 }
                 
-                Section("Database") {
+                Section {
                     Button("Clear All Photos", role: .destructive) {
                         Task {
                             await viewModel.clearDatabase()
@@ -329,9 +413,136 @@ struct SettingsView: View {
             .sheet(isPresented: $showingPhotoScoring) {
                 PhotoScoringView(photoViewModel: viewModel)
             }
+            .sheet(isPresented: $showingScoredPhotos) {
+                ScoredPhotosView(photoViewModel: viewModel)
+            }
             .sheet(isPresented: $showingPhotoClustering) {
                 PhotoClusteringView(photoViewModel: viewModel)
             }
+        }
+    }
+}
+
+// MARK: - Quality Filter View
+
+struct QualityFilterView: View {
+    @Binding var selectedFilter: PhotoGridView.QualityFilter
+    let photoCount: Int
+    @ObservedObject var viewModel: PhotoLibraryViewModel
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(PhotoGridView.QualityFilter.allCases, id: \.self) { filter in
+                        FilterRowView(
+                            filter: filter,
+                            selectedFilter: selectedFilter,
+                            photoCount: getPhotoCount(for: filter),
+                            onTap: {
+                                selectedFilter = filter
+                                dismiss()
+                            }
+                        )
+                    }
+                } header: {
+                    Text("Filter by Quality Score")
+                } footer: {
+                    Text("Quality scores are based on technical analysis including sharpness, exposure, composition, and face detection.")
+                }
+            }
+            .navigationTitle("Filter Photos")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    private func getPhotoCount(for filter: PhotoGridView.QualityFilter) -> Int {
+        guard let threshold = filter.threshold else {
+            return viewModel.photos.count
+        }
+        
+        return viewModel.photos.filter { photo in
+            guard let score = photo.overallScore?.overall else {
+                return filter == .needsWork // Count unscored photos in "Needs Work"
+            }
+            
+            if let upperThreshold = filter.upperThreshold {
+                return score >= threshold && score < upperThreshold
+            } else {
+                return score >= threshold
+            }
+        }.count
+    }
+}
+
+// MARK: - Filter Row View
+
+struct FilterRowView: View {
+    let filter: PhotoGridView.QualityFilter
+    let selectedFilter: PhotoGridView.QualityFilter
+    let photoCount: Int
+    let onTap: () -> Void
+    
+    var body: some View {
+        HStack {
+            filterInfoView
+            Spacer()
+            photoCountView
+            if selectedFilter == filter {
+                checkmarkView
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap()
+        }
+    }
+    
+    private var filterInfoView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(filter.rawValue)
+                .font(.body)
+            
+            Text(filterDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+    
+    private var photoCountView: some View {
+        Text("\(photoCount)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+    }
+    
+    private var checkmarkView: some View {
+        Image(systemName: "checkmark")
+            .foregroundColor(.accentColor)
+            .fontWeight(.semibold)
+    }
+    
+    private var filterDescription: String {
+        switch filter {
+        case .all:
+            return "Show all photos"
+        case .excellent:
+            return "High quality photos ready for sharing"
+        case .good:
+            return "Well-composed photos with good technical quality"
+        case .fair:
+            return "Decent photos that might need minor adjustments"
+        case .needsWork:
+            return "Photos with technical issues or poor composition"
         }
     }
 }
