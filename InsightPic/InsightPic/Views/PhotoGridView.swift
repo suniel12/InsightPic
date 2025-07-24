@@ -68,60 +68,63 @@ struct PhotoGridView: View {
     }
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Group {
-                    if viewModel.isLoading {
-                        LoadingView(viewModel: viewModel)
-                    } else if viewModel.photos.isEmpty {
-                        if viewModel.authorizationStatus == .notDetermined {
-                            PermissionRequestView(viewModel: viewModel)
-                        } else {
-                            EmptyStateView(viewModel: viewModel)
-                        }
+        ZStack {
+            // Main Content - Edge to Edge
+            Group {
+                if viewModel.isLoading {
+                    LoadingView(viewModel: viewModel)
+                } else if viewModel.photos.isEmpty {
+                    if viewModel.authorizationStatus == .notDetermined {
+                        PermissionRequestView(viewModel: viewModel)
                     } else {
-                        FilteredPhotoGrid(photos: filteredPhotos, viewModel: viewModel, columns: columns)
+                        EmptyStateView(viewModel: viewModel)
                     }
-                }
-                
-                // Floating Heart Button
-                if !viewModel.photos.isEmpty {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            Button(action: { showingBestPhotos = true }) {
-                                Image(systemName: "heart.fill")
-                                    .font(.system(size: 20, weight: .medium))
-                                    .foregroundColor(.white)
-                                    .frame(width: 56, height: 56)
-                                    .background(Color.accentColor)
-                                    .clipShape(Circle())
-                                    .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
-                            }
-                            .padding(.trailing, 20)
-                            .padding(.bottom, 34) // Account for safe area
-                        }
-                    }
+                } else {
+                    FilteredPhotoGrid(photos: filteredPhotos, viewModel: viewModel, columns: columns)
                 }
             }
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    if !viewModel.photos.isEmpty {
-                        Button(action: { showingFilter = true }) {
-                            Image(systemName: qualityFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                                .font(.system(size: 17, weight: .medium))
-                        }
-                    }
+            .ignoresSafeArea(.all) // Edge-to-edge content
+            
+            // Floating Glass UI Elements
+            VStack {
+                // Top floating toolbar with glass effect
+                HStack {
+                    Spacer()
                     
-                    Button(action: { showingSettings = true }) {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.system(size: 17, weight: .medium))
+                    if !viewModel.photos.isEmpty {
+                        HStack(spacing: 12) {
+                            // Filter button with glass effect
+                            GlassButton(
+                                icon: qualityFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill",
+                                action: { showingFilter = true }
+                            )
+                            
+                            // Settings button with glass effect
+                            GlassButton(
+                                icon: "ellipsis.circle",
+                                action: { showingSettings = true }
+                            )
+                        }
                     }
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 8) // Just below status bar
+                
+                Spacer()
+                
+                // Bottom floating heart button with glass effect
+                if !viewModel.photos.isEmpty {
+                    HStack {
+                        Spacer()
+                        
+                        GlassHeartButton(action: { showingBestPhotos = true })
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 34) // Above home indicator
+                }
             }
+        }
+        .navigationBarHidden(true) // Hide navigation bar for edge-to-edge effect
             .sheet(isPresented: $showingSettings) {
                 SettingsView(viewModel: viewModel)
             }
@@ -141,7 +144,6 @@ struct PhotoGridView: View {
             .task {
                 await viewModel.loadExistingPhotos()
             }
-        }
     }
 }
 
@@ -571,6 +573,82 @@ struct FilterRowView: View {
         case .needsWork:
             return "Photos with technical issues or poor composition"
         }
+    }
+}
+
+// MARK: - Glass Effect Components
+
+struct GlassButton: View {
+    let icon: String
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+                .background(
+                    ZStack {
+                        // Glass background effect
+                        RoundedRectangle(cornerRadius: 22)
+                            .fill(.ultraThinMaterial)
+                        
+                        // Subtle border
+                        RoundedRectangle(cornerRadius: 22)
+                            .stroke(.white.opacity(0.2), lineWidth: 0.5)
+                    }
+                )
+                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct GlassHeartButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "heart.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 60, height: 60)
+                .background(
+                    ZStack {
+                        // Main colored background with glass effect
+                        Circle()
+                            .fill(.thinMaterial)
+                            .background(
+                                Circle()
+                                    .fill(Color.accentColor)
+                            )
+                        
+                        // Glass overlay effect
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        .white.opacity(0.3),
+                                        .white.opacity(0.1),
+                                        .clear,
+                                        .black.opacity(0.1)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                        
+                        // Subtle border
+                        Circle()
+                            .stroke(.white.opacity(0.3), lineWidth: 1)
+                    }
+                )
+                .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 6)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .scaleEffect(1.0)
+        .animation(.easeInOut(duration: 0.1), value: false)
     }
 }
 

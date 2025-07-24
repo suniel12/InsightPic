@@ -15,59 +15,70 @@ struct CuratedBestPhotosView: View {
     ]
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                // Background
-                Color(.systemGroupedBackground)
-                    .ignoresSafeArea()
-                
-                if isCheckingForExistingResults {
-                    // Checking state
-                    ProgressView()
-                        .scaleEffect(1.2)
-                        .foregroundStyle(.secondary)
-                } else if !hasEverAnalyzed {
-                    // Onboarding state - never analyzed before
-                    BestPhotosOnboardingView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel)
-                } else if clusteringViewModel.isClustering {
-                    // Analysis in progress
-                    BestPhotosAnalysisView(clusteringViewModel: clusteringViewModel)
-                } else {
-                    // Results view
-                    BestPhotosResultsView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel, columns: columns)
-                }
+        ZStack {
+            // Background - Edge to Edge
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea(.all)
+            
+            // Main Content
+            if isCheckingForExistingResults {
+                // Checking state
+                ProgressView()
+                    .scaleEffect(1.2)
+                    .foregroundStyle(.secondary)
+            } else if !hasEverAnalyzed {
+                // Onboarding state - never analyzed before
+                BestPhotosOnboardingView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel)
+            } else if clusteringViewModel.isClustering {
+                // Analysis in progress
+                BestPhotosAnalysisView(clusteringViewModel: clusteringViewModel)
+            } else {
+                // Results view
+                BestPhotosResultsView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel, columns: columns)
             }
-            .navigationTitle("Best Photos")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .font(.body)
-                    .fontWeight(.medium)
-                }
-                
-                if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Refresh") {
+            
+            // Floating Glass Navigation
+            VStack {
+                HStack {
+                    // Glass Done button
+                    GlassDoneButton(action: { dismiss() })
+                    
+                    Spacer()
+                    
+                    Text("Best Photos")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                    
+                    Spacer()
+                    
+                    // Glass Refresh button (when results exist)
+                    if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
+                        GlassRefreshButton(action: {
                             Task {
                                 await clusteringViewModel.clusterPhotos(photoViewModel.photos, saveResults: true)
                             }
-                        }
-                        .font(.body)
-                        .fontWeight(.medium)
+                        })
+                    } else {
+                        // Placeholder to maintain spacing
+                        Color.clear
+                            .frame(width: 44, height: 44)
                     }
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                
+                Spacer()
             }
-            .task {
-                await checkForExistingResults()
-            }
-            .onChange(of: clusteringViewModel.isClustering) { _, isClustering in
-                // When clustering completes and we have results, auto-transition to results view
-                if !isClustering && !clusteringViewModel.clusters.isEmpty && !hasEverAnalyzed {
-                    hasEverAnalyzed = true
-                }
+        }
+        .navigationBarHidden(true) // Hide navigation bar for edge-to-edge effect
+        .task {
+            await checkForExistingResults()
+        }
+        .onChange(of: clusteringViewModel.isClustering) { _, isClustering in
+            // When clustering completes and we have results, auto-transition to results view
+            if !isClustering && !clusteringViewModel.clusters.isEmpty && !hasEverAnalyzed {
+                hasEverAnalyzed = true
             }
         }
     }
@@ -378,6 +389,60 @@ struct CuratedPhotoThumbnailView: View {
                 self.isLoading = false
             }
         }
+    }
+}
+
+// MARK: - Glass Navigation Components
+
+struct GlassDoneButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+                .background(
+                    ZStack {
+                        // Glass background effect
+                        Circle()
+                            .fill(.ultraThinMaterial)
+                        
+                        // Subtle border
+                        Circle()
+                            .stroke(.white.opacity(0.2), lineWidth: 0.5)
+                    }
+                )
+                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct GlassRefreshButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+                .background(
+                    ZStack {
+                        // Glass background effect
+                        Circle()
+                            .fill(.ultraThinMaterial)
+                        
+                        // Subtle border
+                        Circle()
+                            .stroke(.white.opacity(0.2), lineWidth: 0.5)
+                    }
+                )
+                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 
