@@ -20,11 +20,10 @@ final class InsightPicTests: XCTestCase {
         let metadata = PhotoMetadata(
             width: 1920,
             height: 1080,
-            cameraMake: "Apple",
             cameraModel: "iPhone 15",
             focalLength: 26.0,
-            aperture: 1.6,
-            shutterSpeed: 0.016,
+            fNumber: 1.6,
+            exposureTime: 0.016,
             iso: 100
         )
         
@@ -89,12 +88,11 @@ final class InsightPicTests: XCTestCase {
     func testPhotoClusterCreation() throws {
         // Test PhotoCluster creation and computed properties
         let clusterId = UUID()
-        let cluster = PhotoCluster(id: clusterId, photos: [])
+        let cluster = PhotoCluster(id: clusterId, photos: [], representativeFingerprint: Data())
         
         XCTAssertEqual(cluster.id, clusterId)
         XCTAssertTrue(cluster.photos.isEmpty)
-        XCTAssertNil(cluster.medianTimestamp)
-        XCTAssertNil(cluster.medianLocation)
+        XCTAssertNil(cluster.centerLocation)
     }
     
     func testTechnicalQualityScoreCreation() throws {
@@ -110,27 +108,27 @@ final class InsightPicTests: XCTestCase {
         XCTAssertEqual(score.composition, 0.7)
         
         let expectedOverall = (0.8 + 0.9 + 0.7) / 3.0
-        XCTAssertEqual(score.overall, expectedOverall, accuracy: 0.001)
+        XCTAssertEqual(Double(score.overall), expectedOverall, accuracy: 0.001)
     }
     
     func testFaceQualityScoreCreation() throws {
         // Test FaceQualityScore model
         let score = FaceQualityScore(
             faceCount: 2,
-            eyesOpen: 0.95,
-            smiling: 0.8,
-            faceSize: 0.9,
-            faceAngle: 0.85
+            averageScore: 0.85,
+            eyesOpen: true,
+            goodExpressions: true,
+            optimalSizes: true
         )
         
         XCTAssertEqual(score.faceCount, 2)
-        XCTAssertEqual(score.eyesOpen, 0.95)
-        XCTAssertEqual(score.smiling, 0.8)
-        XCTAssertEqual(score.faceSize, 0.9)
-        XCTAssertEqual(score.faceAngle, 0.85)
+        XCTAssertEqual(score.averageScore, 0.85)
+        XCTAssertEqual(score.eyesOpen, true)
+        XCTAssertEqual(score.goodExpressions, true)
+        XCTAssertEqual(score.optimalSizes, true)
         
-        let expectedOverall = (0.95 + 0.8 + 0.9 + 0.85) / 4.0
-        XCTAssertEqual(score.overall, expectedOverall, accuracy: 0.001)
+        // Test composite score calculation
+        XCTAssertGreaterThan(score.compositeScore, 0.8)
     }
 
     func testPerformanceExample() throws {
@@ -146,7 +144,6 @@ final class InsightPicTests: XCTestCase {
                     metadata: PhotoMetadata(
                         width: 1920,
                         height: 1080,
-                        cameraMake: "Apple",
                         cameraModel: "iPhone 15"
                     )
                 )
