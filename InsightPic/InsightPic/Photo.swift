@@ -90,47 +90,7 @@ struct Photo: Identifiable, Codable {
     }
 }
 
-struct PhotoCluster: Identifiable {
-    let id: UUID
-    var photos: [Photo]
-    let representativeFingerprint: Data
-    let createdAt: Date
-    
-    init(id: UUID = UUID(),
-         photos: [Photo] = [],
-         representativeFingerprint: Data,
-         createdAt: Date = Date()) {
-        self.id = id
-        self.photos = photos
-        self.representativeFingerprint = representativeFingerprint
-        self.createdAt = createdAt
-    }
-    
-    // Computed properties
-    var medianTimestamp: Date {
-        let timestamps = photos.map { $0.timestamp }.sorted()
-        guard !timestamps.isEmpty else { return createdAt }
-        let middleIndex = timestamps.count / 2
-        return timestamps[middleIndex]
-    }
-    
-    var centerLocation: CLLocation? {
-        let locations = photos.compactMap { $0.location }
-        guard !locations.isEmpty else { return nil }
-        
-        let avgLatitude = locations.map { $0.coordinate.latitude }.reduce(0, +) / Double(locations.count)
-        let avgLongitude = locations.map { $0.coordinate.longitude }.reduce(0, +) / Double(locations.count)
-        return CLLocation(latitude: avgLatitude, longitude: avgLongitude)
-    }
-    
-    var bestPhoto: Photo? {
-        return photos.max { photo1, photo2 in
-            let score1 = photo1.overallScore?.overall ?? 0.5
-            let score2 = photo2.overallScore?.overall ?? 0.5
-            return score1 < score2
-        }
-    }
-}
+// PhotoCluster definition moved to Services/Clustering/PhotoClusteringService.swift
 
 struct Recommendations {
     let generatedAt: Date

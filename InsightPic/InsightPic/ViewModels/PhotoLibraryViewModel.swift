@@ -25,8 +25,23 @@ class PhotoLibraryViewModel: ObservableObject {
     
     func requestPhotoLibraryAccess() async {
         isLoading = true
-        loadingText = "Requesting photo library access..."
+        loadingText = "Checking for existing photos..."
         
+        // First check if we already have photos in the database
+        do {
+            let existingPhotos = try await photoRepository.loadPhotos()
+            if !existingPhotos.isEmpty {
+                photos = existingPhotos
+                loadingText = "Loaded \(existingPhotos.count) photos from database"
+                print("DEBUG: Found \(existingPhotos.count) existing photos in database")
+                isLoading = false
+                return
+            }
+        } catch {
+            print("DEBUG: No existing photos found, will load from library")
+        }
+        
+        loadingText = "Requesting photo library access..."
         authorizationStatus = await photoLibraryService.requestAuthorization()
         
         switch authorizationStatus {
@@ -98,6 +113,23 @@ class PhotoLibraryViewModel: ObservableObject {
     
     func refreshPhotos() async {
         await loadPhotosFromLibrary()
+    }
+    
+    func clearDatabase() async {
+        isLoading = true
+        loadingText = "Clearing database..."
+        
+        do {
+            try await photoRepository.clearAllPhotos()
+            photos = []
+            loadingText = "Database cleared"
+            print("DEBUG: Database cleared successfully")
+        } catch {
+            errorMessage = "Failed to clear database: \(error.localizedDescription)"
+            print("DEBUG: Database clear error: \(error)")
+        }
+        
+        isLoading = false
     }
     
     func loadThumbnail(for photo: Photo) async -> UIImage? {

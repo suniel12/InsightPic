@@ -98,18 +98,18 @@ extension PhotoEntity {
 extension PhotoClusterEntity {
     func updateFromPhotoCluster(_ cluster: PhotoCluster) {
         self.id = cluster.id
-        self.createdAt = cluster.createdAt
+        self.createdAt = Date() // Use current time for creation
     }
     
     func convertToPhotoCluster() -> PhotoCluster {
         let photos = photoArray.map { $0.convertToPhoto() }
         
-        return PhotoCluster(
-            id: id ?? UUID(),
-            photos: photos,
-            representativeFingerprint: Data(), // You may want to store this separately
-            createdAt: createdAt ?? Date()
-        )
+        var photoCluster = PhotoCluster()
+        for photo in photos {
+            photoCluster.add(photo, fingerprint: nil)
+        }
+        
+        return photoCluster
     }
     
     var photoArray: [PhotoEntity] {

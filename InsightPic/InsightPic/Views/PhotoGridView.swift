@@ -231,6 +231,7 @@ struct SettingsView: View {
     @ObservedObject var viewModel: PhotoLibraryViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var showingPhotoAnalysis = false
+    @State private var showingPhotoClustering = false
     
     var body: some View {
         NavigationView {
@@ -262,9 +263,14 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section("AI Analysis") {
-                    Button("Analyze Photos with AI") {
+                Section("AI Features") {
+                    Button("Analyze Photo Quality") {
                         showingPhotoAnalysis = true
+                    }
+                    .disabled(viewModel.photos.isEmpty)
+                    
+                    Button("Cluster Similar Photos") {
+                        showingPhotoClustering = true
                     }
                     .disabled(viewModel.photos.isEmpty)
                 }
@@ -287,6 +293,15 @@ struct SettingsView: View {
                         dismiss()
                     }
                 }
+                
+                Section("Database") {
+                    Button("Clear All Photos", role: .destructive) {
+                        Task {
+                            await viewModel.clearDatabase()
+                            dismiss()
+                        }
+                    }
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -299,6 +314,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingPhotoAnalysis) {
                 PhotoAnalysisView(photoViewModel: viewModel)
+            }
+            .sheet(isPresented: $showingPhotoClustering) {
+                PhotoClusteringView(photoViewModel: viewModel)
             }
         }
     }

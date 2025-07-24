@@ -11,6 +11,7 @@ protocol PhotoDataRepositoryProtocol {
     func loadPhoto(by assetIdentifier: String) async throws -> Photo?
     func deletePhoto(_ photo: Photo) async throws
     func deletePhotos(with assetIdentifiers: [String]) async throws
+    func clearAllPhotos() async throws
     
     func saveCluster(_ cluster: PhotoCluster) async throws
     func saveClusters(_ clusters: [PhotoCluster]) async throws
@@ -292,6 +293,32 @@ class PhotoDataRepository: PhotoDataRepositoryProtocol {
         return try await coreDataStack.performBackgroundTask { context in
             let fetchRequest: NSFetchRequest<PhotoClusterEntity> = PhotoClusterEntity.fetchRequest()
             return try context.count(for: fetchRequest)
+        }
+    }
+    
+    func clearAllPhotos() async throws {
+        try await coreDataStack.performBackgroundTask { context in
+            // Delete all photos
+            let photoFetchRequest: NSFetchRequest<NSFetchRequestResult> = PhotoEntity.fetchRequest()
+            let photoBatchDeleteRequest = NSBatchDeleteRequest(fetchRequest: photoFetchRequest)
+            try context.execute(photoBatchDeleteRequest)
+            
+            // Delete all clusters
+            let clusterFetchRequest: NSFetchRequest<NSFetchRequestResult> = PhotoClusterEntity.fetchRequest()
+            let clusterBatchDeleteRequest = NSBatchDeleteRequest(fetchRequest: clusterFetchRequest)
+            try context.execute(clusterBatchDeleteRequest)
+            
+            // Delete all photo metadata
+            let metadataFetchRequest: NSFetchRequest<NSFetchRequestResult> = PhotoMetadataEntity.fetchRequest()
+            let metadataBatchDeleteRequest = NSBatchDeleteRequest(fetchRequest: metadataFetchRequest)
+            try context.execute(metadataBatchDeleteRequest)
+            
+            // Delete all photo scores
+            let scoreFetchRequest: NSFetchRequest<NSFetchRequestResult> = PhotoScoreEntity.fetchRequest()
+            let scoreBatchDeleteRequest = NSBatchDeleteRequest(fetchRequest: scoreFetchRequest)
+            try context.execute(scoreBatchDeleteRequest)
+            
+            try context.save()
         }
     }
 }
