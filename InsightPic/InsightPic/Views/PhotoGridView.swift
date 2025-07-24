@@ -4,6 +4,7 @@ struct PhotoGridView: View {
     @StateObject private var viewModel = PhotoLibraryViewModel()
     @State private var showingSettings = false
     @State private var showingFilter = false
+    @State private var showingBestPhotos = false
     @State private var qualityFilter: QualityFilter = .all
     
     private let columns = [
@@ -68,21 +69,44 @@ struct PhotoGridView: View {
     
     var body: some View {
         NavigationStack {
-            Group {
-                if viewModel.isLoading {
-                    LoadingView(viewModel: viewModel)
-                } else if viewModel.photos.isEmpty {
-                    if viewModel.authorizationStatus == .notDetermined {
-                        PermissionRequestView(viewModel: viewModel)
+            ZStack {
+                Group {
+                    if viewModel.isLoading {
+                        LoadingView(viewModel: viewModel)
+                    } else if viewModel.photos.isEmpty {
+                        if viewModel.authorizationStatus == .notDetermined {
+                            PermissionRequestView(viewModel: viewModel)
+                        } else {
+                            EmptyStateView(viewModel: viewModel)
+                        }
                     } else {
-                        EmptyStateView(viewModel: viewModel)
+                        FilteredPhotoGrid(photos: filteredPhotos, viewModel: viewModel, columns: columns)
                     }
-                } else {
-                    FilteredPhotoGrid(photos: filteredPhotos, viewModel: viewModel, columns: columns)
+                }
+                
+                // Floating Heart Button
+                if !viewModel.photos.isEmpty {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Button(action: { showingBestPhotos = true }) {
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundColor(.white)
+                                    .frame(width: 56, height: 56)
+                                    .background(Color.accentColor)
+                                    .clipShape(Circle())
+                                    .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
+                            }
+                            .padding(.trailing, 20)
+                            .padding(.bottom, 34) // Account for safe area
+                        }
+                    }
                 }
             }
-            .navigationTitle(qualityFilter == .all ? "Photos" : qualityFilter.rawValue)
-            .navigationBarTitleDisplayMode(.large)
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if !viewModel.photos.isEmpty {
@@ -103,6 +127,9 @@ struct PhotoGridView: View {
             }
             .sheet(isPresented: $showingFilter) {
                 QualityFilterView(selectedFilter: $qualityFilter, photoCount: viewModel.photos.count, viewModel: viewModel)
+            }
+            .fullScreenCover(isPresented: $showingBestPhotos) {
+                CuratedBestPhotosView(photoViewModel: viewModel)
             }
             .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") {
@@ -367,7 +394,7 @@ struct SettingsView: View {
                     }
                     .disabled(viewModel.photos.isEmpty)
                     
-                    Button("Find Similar") {
+                    Button("Find Best Photos") {
                         showingPhotoClustering = true
                     }
                     .disabled(viewModel.photos.isEmpty)

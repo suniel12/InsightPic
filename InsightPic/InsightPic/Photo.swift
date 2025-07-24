@@ -17,6 +17,13 @@ struct Photo: Identifiable, Codable {
     var overallScore: PhotoScore?
     var clusterId: UUID?
     
+    // MARK: - Computed Properties
+    
+    /// Detects if this photo is likely a screenshot based on metadata
+    var isLikelyScreenshot: Bool {
+        return ScreenshotDetector.isScreenshot(self)
+    }
+    
     init(id: UUID = UUID(),
          assetIdentifier: String,
          timestamp: Date,

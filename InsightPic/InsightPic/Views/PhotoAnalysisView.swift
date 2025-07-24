@@ -31,7 +31,7 @@ struct PhotoAnalysisView: View {
                         
                         // Content based on selected segment
                         TabView(selection: $selectedSegment) {
-                            BestPhotosView(analysisViewModel: analysisViewModel, photoViewModel: photoViewModel)
+                            AnalysisBestPhotosView(analysisViewModel: analysisViewModel, photoViewModel: photoViewModel)
                                 .tag(0)
                             
                             AllResultsView(analysisViewModel: analysisViewModel, photoViewModel: photoViewModel)
@@ -156,7 +156,7 @@ struct AnalysisStartView: View {
 
 // MARK: - Best Photos View
 
-struct BestPhotosView: View {
+struct AnalysisBestPhotosView: View {
     @ObservedObject var analysisViewModel: PhotoAnalysisViewModel
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     
@@ -177,7 +177,7 @@ struct BestPhotosView: View {
                         
                         LazyVGrid(columns: columns, spacing: 2) {
                             ForEach(analysisViewModel.bestPhotos, id: \.photoId) { result in
-                                BestPhotoThumbnailView(result: result, photoViewModel: photoViewModel)
+                                AnalysisPhotoThumbnailView(result: result, photoViewModel: photoViewModel)
                             }
                         }
                         .padding(.horizontal, 2)
@@ -203,7 +203,7 @@ struct BestPhotosView: View {
 
 // MARK: - Best Photo Thumbnail View
 
-struct BestPhotoThumbnailView: View {
+struct AnalysisPhotoThumbnailView: View {
     let result: PhotoAnalysisResult
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     
@@ -302,7 +302,7 @@ struct SimilarPhotoGroupView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(group, id: \.photoId) { result in
-                        BestPhotoThumbnailView(result: result, photoViewModel: photoViewModel)
+                        AnalysisPhotoThumbnailView(result: result, photoViewModel: photoViewModel)
                             .frame(width: 100, height: 100)
                     }
                 }

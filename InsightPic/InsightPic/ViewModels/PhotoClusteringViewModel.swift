@@ -14,14 +14,48 @@ class PhotoClusteringViewModel: ObservableObject {
     @Published var similarPhotoGroups: [[Photo]] = []
     
     private let clusteringService: PhotoClusteringServiceProtocol
+    private let photoRepository: PhotoDataRepositoryProtocol
     
-    init(clusteringService: PhotoClusteringServiceProtocol = PhotoClusteringService()) {
+    init(clusteringService: PhotoClusteringServiceProtocol = PhotoClusteringService(),
+         photoRepository: PhotoDataRepositoryProtocol = PhotoDataRepository()) {
         self.clusteringService = clusteringService
+        self.photoRepository = photoRepository
     }
     
     // MARK: - Public Methods
     
-    func clusterPhotos(_ photos: [Photo]) async {
+    /// Loads existing clusters from persistence
+    func loadExistingClusters() async throws -> [PhotoCluster] {
+        return try await photoRepository.loadClusters()
+    }
+    
+    /// Loads existing clusters from persistence, or creates new ones if needed
+    func loadOrCreateClusters(for photos: [Photo]) async {
+        do {
+            // First, try to load existing clusters
+            let existingClusters = try await photoRepository.loadClusters()
+            
+            // Check if we need to update clusters (new photos added, or no existing clusters)
+            let needsUpdate = shouldUpdateClusters(existingClusters: existingClusters, currentPhotos: photos)
+            
+            if !existingClusters.isEmpty && !needsUpdate {
+                // Use existing clusters
+                await MainActor.run {
+                    self.clusters = existingClusters
+                    self.statistics = ClusteringStatistics(clusters: existingClusters)
+                    self.findSimilarPhotoGroups()
+                }
+            } else {
+                // Create new clusters
+                await clusterPhotos(photos, saveResults: true)
+            }
+        } catch {
+            // If loading fails, create new clusters
+            await clusterPhotos(photos, saveResults: true)
+        }
+    }
+    
+    func clusterPhotos(_ photos: [Photo], saveResults: Bool = true) async {
         guard !photos.isEmpty else { return }
         
         isClustering = true
@@ -32,7 +66,10 @@ class PhotoClusteringViewModel: ObservableObject {
         statistics = nil
         
         do {
-            let clusteredResults = try await clusteringService.clusterPhotos(photos) { completed, total in
+            // Filter out screenshots before clustering
+            let photosToCluster = photos.filter { !$0.isLikelyScreenshot }
+            
+            let clusteredResults = try await clusteringService.clusterPhotos(photosToCluster) { completed, total in
                 Task { @MainActor in
                     self.clusteringProgress = Double(completed) / Double(total)
                     self.clusteringText = "Clustering photo \(completed) of \(total)..."
@@ -43,6 +80,16 @@ class PhotoClusteringViewModel: ObservableObject {
             statistics = ClusteringStatistics(clusters: clusteredResults)
             findSimilarPhotoGroups()
             clusteringText = "Clustering complete! Found \(clusteredResults.count) photo groups"
+            
+            // Save results to persistence if requested
+            if saveResults {
+                do {
+                    try await photoRepository.saveClusters(clusteredResults)
+                } catch {
+                    print("Failed to save clusters: \(error)")
+                    // Don't fail the clustering operation if save fails
+                }
+            }
             
         } catch {
             errorMessage = "Clustering failed: \(error.localizedDescription)"
@@ -226,10 +273,10 @@ class PhotoClusteringViewModel: ObservableObject {
     }
     
     private func getClusterWinners() -> [Photo] {
-        // Get the best photo from each cluster
+        // Get the best photo from each cluster, excluding screenshots
         return clusters.compactMap { cluster in
             getBestPhotoFromCluster(cluster)
-        }
+        }.filter { !$0.isLikelyScreenshot }
     }
     
     private func selectBestWithDiversity(from photos: [Photo], count: Int) -> [Photo] {
@@ -403,6 +450,30 @@ class PhotoClusteringViewModel: ObservableObject {
     private func selectBestFromCategory(_ photos: [Photo], count: Int) -> [Photo] {
         let sorted = photos.sorted { calculateSmartScore(for: $0) > calculateSmartScore(for: $1) }
         return Array(sorted.prefix(count))
+    }
+    
+    /// Determines if existing clusters need to be updated based on current photos
+    private func shouldUpdateClusters(existingClusters: [PhotoCluster], currentPhotos: [Photo]) -> Bool {
+        // Get photo IDs from existing clusters
+        let clusteredPhotoIds = Set(existingClusters.flatMap { cluster in
+            cluster.photos.map { $0.id }
+        })
+        
+        // Get current photo IDs (excluding screenshots)
+        let currentPhotoIds = Set(currentPhotos.filter { !$0.isLikelyScreenshot }.map { $0.id })
+        
+        // If photo sets are different, we need to update
+        if clusteredPhotoIds != currentPhotoIds {
+            return true
+        }
+        
+        // Check if clusters are too old (older than 7 days)
+        let weekAgo = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+        let hasOldClusters = existingClusters.contains { cluster in
+            cluster.timeRange?.start ?? Date.distantPast < weekAgo
+        }
+        
+        return hasOldClusters
     }
     
     // MARK: - Error Handling

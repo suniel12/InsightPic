@@ -71,7 +71,7 @@ struct PhotoClusteringView: View {
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button("Re-cluster") {
                             Task {
-                                await clusteringViewModel.refreshClustering(for: photoViewModel.photos)
+                                await clusteringViewModel.clusterPhotos(photoViewModel.photos, saveResults: true)
                             }
                         }
                     }
@@ -159,7 +159,7 @@ struct ClusteringStartView: View {
             VStack(spacing: 12) {
                 Button(action: {
                     Task {
-                        await clusteringViewModel.clusterPhotos(photoViewModel.photos)
+                        await clusteringViewModel.loadOrCreateClusters(for: photoViewModel.photos)
                     }
                 }) {
                     Text("Start Clustering")
