@@ -6,12 +6,16 @@
 //
 
 import SwiftUI
+import CoreData
 
 @main
 struct InsightPicApp: App {
+    let persistenceController = CoreDataStack.shared
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.managedObjectContext, persistenceController.mainContext)
         }
     }
 }
