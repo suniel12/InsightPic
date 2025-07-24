@@ -22,6 +22,7 @@ protocol PhotoDataRepositoryProtocol {
     
     func cleanup() async throws
     func resetDatabase() async throws
+    func loadPhotosWithoutScores() async throws -> [Photo]
 }
 
 // MARK: - PhotoDataRepository Implementation

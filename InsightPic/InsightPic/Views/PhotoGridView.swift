@@ -5,40 +5,33 @@ struct PhotoGridView: View {
     @State private var showingSettings = false
     
     private let columns = [
-        GridItem(.adaptive(minimum: 120, maximum: 150), spacing: 2),
-        GridItem(.adaptive(minimum: 120, maximum: 150), spacing: 2),
-        GridItem(.adaptive(minimum: 120, maximum: 150), spacing: 2)
+        GridItem(.flexible(), spacing: 1),
+        GridItem(.flexible(), spacing: 1),
+        GridItem(.flexible(), spacing: 1)
     ]
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Group {
-                if viewModel.authorizationStatus == .notDetermined {
-                    PermissionRequestView(viewModel: viewModel)
-                } else if viewModel.isLoading {
+                if viewModel.isLoading {
                     LoadingView(viewModel: viewModel)
                 } else if viewModel.photos.isEmpty {
-                    EmptyStateView(viewModel: viewModel)
+                    if viewModel.authorizationStatus == .notDetermined {
+                        PermissionRequestView(viewModel: viewModel)
+                    } else {
+                        EmptyStateView(viewModel: viewModel)
+                    }
                 } else {
                     PhotoGrid(viewModel: viewModel, columns: columns)
                 }
             }
-            .navigationTitle("InsightPic")
+            .navigationTitle("Photos")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { showingSettings = true }) {
-                        Image(systemName: "gear")
-                    }
-                }
-                
-                if !viewModel.photos.isEmpty {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button("Refresh") {
-                            Task {
-                                await viewModel.refreshPhotos()
-                            }
-                        }
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 17, weight: .medium))
                     }
                 }
             }
@@ -51,6 +44,9 @@ struct PhotoGridView: View {
                 }
             } message: {
                 Text(viewModel.errorMessage ?? "")
+            }
+            .task {
+                await viewModel.loadExistingPhotos()
             }
         }
     }
@@ -164,15 +160,16 @@ struct PhotoGrid: View {
     
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 2) {
+            LazyVGrid(columns: columns, spacing: 1) {
                 ForEach(viewModel.photos) { photo in
                     PhotoThumbnailView(photo: photo, viewModel: viewModel)
                         .aspectRatio(1, contentMode: .fill)
                         .clipped()
                 }
             }
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 0)
         }
+        .clipped()
     }
 }
 
@@ -184,6 +181,7 @@ struct PhotoThumbnailView: View {
     
     @State private var thumbnailImage: UIImage?
     @State private var isLoading = true
+    @State private var showingDetailView = false
     
     var body: some View {
         Group {
@@ -193,21 +191,35 @@ struct PhotoThumbnailView: View {
                     .aspectRatio(contentMode: .fill)
             } else if isLoading {
                 Rectangle()
-                    .fill(Color.gray.opacity(0.3))
+                    .fill(Color.gray.opacity(0.1))
                     .overlay {
                         ProgressView()
                             .scaleEffect(0.8)
+                            .tint(.gray)
                     }
             } else {
                 Rectangle()
-                    .fill(Color.gray.opacity(0.3))
+                    .fill(Color.gray.opacity(0.1))
                     .overlay {
                         Image(systemName: "photo")
-                            .foregroundColor(.gray)
+                            .foregroundColor(.gray.opacity(0.5))
+                            .font(.system(size: 20))
                     }
             }
         }
-        .cornerRadius(4)
+        .cornerRadius(0)
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showingDetailView = true
+            }
+        }
+        .fullScreenCover(isPresented: $showingDetailView) {
+            PhotoDetailView(photo: photo, viewModel: viewModel)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                    removal: .opacity.combined(with: .scale(scale: 1.05))
+                ))
+        }
         .onAppear {
             loadThumbnail()
         }
@@ -231,6 +243,7 @@ struct SettingsView: View {
     @ObservedObject var viewModel: PhotoLibraryViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var showingPhotoAnalysis = false
+    @State private var showingPhotoScoring = false
     @State private var showingPhotoClustering = false
     
     var body: some View {
@@ -269,6 +282,11 @@ struct SettingsView: View {
                     }
                     .disabled(viewModel.photos.isEmpty)
                     
+                    Button("Quality Scoring & Assessment") {
+                        showingPhotoScoring = true
+                    }
+                    .disabled(viewModel.photos.isEmpty)
+                    
                     Button("Cluster Similar Photos") {
                         showingPhotoClustering = true
                     }
@@ -276,13 +294,6 @@ struct SettingsView: View {
                 }
                 
                 Section("Actions") {
-                    Button("Refresh Photo Library") {
-                        Task {
-                            await viewModel.refreshPhotos()
-                            dismiss()
-                        }
-                    }
-                    
                     Button("Filter Recent Photos (30 days)") {
                         viewModel.filterRecentPhotos(days: 30)
                         dismiss()
@@ -314,6 +325,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingPhotoAnalysis) {
                 PhotoAnalysisView(photoViewModel: viewModel)
+            }
+            .sheet(isPresented: $showingPhotoScoring) {
+                PhotoScoringView(photoViewModel: viewModel)
             }
             .sheet(isPresented: $showingPhotoClustering) {
                 PhotoClusteringView(photoViewModel: viewModel)

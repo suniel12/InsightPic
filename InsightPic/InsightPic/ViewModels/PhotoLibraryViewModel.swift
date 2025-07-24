@@ -21,6 +21,20 @@ class PhotoLibraryViewModel: ObservableObject {
         self.photoRepository = photoRepository
     }
     
+    // MARK: - Initialization
+    
+    func loadExistingPhotos() async {
+        do {
+            let existingPhotos = try await photoRepository.loadPhotos()
+            await MainActor.run {
+                photos = existingPhotos
+                print("DEBUG: Loaded \(existingPhotos.count) existing photos from database on startup")
+            }
+        } catch {
+            print("DEBUG: No existing photos found on startup: \(error)")
+        }
+    }
+    
     // MARK: - Public Methods
     
     func requestPhotoLibraryAccess() async {
@@ -70,23 +84,32 @@ class PhotoLibraryViewModel: ObservableObject {
         errorMessage = nil
         
         do {
-            // Load photos from library
+            // Load photos from library with progress tracking
+            loadingProgress = 0.1
+            loadingText = "Fetching photos from library..."
+            
             let libraryPhotos = try await photoLibraryService.fetchAllPhotos()
             print("DEBUG: Fetched \(libraryPhotos.count) photos from photo library")
+            
+            loadingProgress = 0.3
+            loadingText = "Processing \(libraryPhotos.count) photos..."
             
             // For testing with large libraries, limit to first 100 photos
             let photosToProcess = Array(libraryPhotos.prefix(100))
             print("DEBUG: Processing first \(photosToProcess.count) photos for testing")
             
-            // Update progress
-            loadingProgress = 1.0
-            loadingText = "Loaded \(photosToProcess.count) photos..."
+            loadingProgress = 0.6
+            loadingText = "Preparing \(photosToProcess.count) photos for database..."
             
+            loadingProgress = 0.8
             loadingText = "Saving photos to database..."
             
             // Save to Core Data
             try await photoRepository.savePhotos(photosToProcess)
             print("DEBUG: Saved \(photosToProcess.count) photos to database")
+            
+            loadingProgress = 0.9
+            loadingText = "Loading from database..."
             
             // Load from database to get complete objects
             let loadedPhotos = try await photoRepository.loadPhotos()
@@ -97,6 +120,7 @@ class PhotoLibraryViewModel: ObservableObject {
                 print("DEBUG: UI updated with \(photos.count) photos")
             }
             
+            loadingProgress = 1.0
             loadingText = "Complete! Loaded \(photos.count) photos"
             
         } catch {
@@ -109,10 +133,6 @@ class PhotoLibraryViewModel: ObservableObject {
         
         isLoading = false
         loadingProgress = 0.0
-    }
-    
-    func refreshPhotos() async {
-        await loadPhotosFromLibrary()
     }
     
     func clearDatabase() async {
