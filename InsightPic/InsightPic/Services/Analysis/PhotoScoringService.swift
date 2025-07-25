@@ -27,17 +27,20 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
     private let photoLibraryService: PhotoLibraryServiceProtocol
     private let categorizationService: PhotoCategorizationServiceProtocol
     private let contextService: PhotoContextServiceProtocol
+    private let coreMLAestheticService: CoreMLAestheticServiceProtocol
     
     init(analysisService: PhotoAnalysisServiceProtocol = PhotoAnalysisService(),
          photoRepository: PhotoDataRepositoryProtocol = PhotoDataRepository(),
          photoLibraryService: PhotoLibraryServiceProtocol = PhotoLibraryService(),
          categorizationService: PhotoCategorizationServiceProtocol = PhotoCategorizationService(),
-         contextService: PhotoContextServiceProtocol = PhotoContextService()) {
+         contextService: PhotoContextServiceProtocol = PhotoContextService(),
+         coreMLAestheticService: CoreMLAestheticServiceProtocol = CoreMLAestheticService()) {
         self.analysisService = analysisService
         self.photoRepository = photoRepository
         self.photoLibraryService = photoLibraryService
         self.categorizationService = categorizationService
         self.contextService = contextService
+        self.coreMLAestheticService = coreMLAestheticService
     }
     
     // MARK: - Public Methods
@@ -54,7 +57,7 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
         // Convert to our scoring models
         let technicalScore = createTechnicalScore(from: analysisResult)
         let faceScore = createFaceScore(from: analysisResult)
-        let overallScore = createOverallScore(from: analysisResult, technicalScore: technicalScore, faceScore: faceScore, photo: photo)
+        let overallScore = await createOverallScore(from: analysisResult, technicalScore: technicalScore, faceScore: faceScore, photo: photo)
         
         return (technicalScore, faceScore, overallScore)
     }
@@ -191,22 +194,40 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
         )
     }
     
-    private func createOverallScore(from result: PhotoAnalysisResult, technicalScore: TechnicalQualityScore, faceScore: FaceQualityScore, photo: Photo) -> PhotoScore {
+    private func createOverallScore(from result: PhotoAnalysisResult, technicalScore: TechnicalQualityScore, faceScore: FaceQualityScore, photo: Photo) async -> PhotoScore {
         let technical = technicalScore.overall
         let faces = faceScore.compositeScore
         
         // Enhanced context scoring with comprehensive context analysis
         var enhancedContext = Float(result.aestheticScore)
         
-        // Use Vision Framework aesthetic analysis if available
-        if let aesthetics = result.aestheticAnalysis {
-            // Heavily penalize utility images (screenshots, documents)
-            if aesthetics.isUtility {
-                enhancedContext = min(enhancedContext, 0.2) // Cap utility images at 20%
+        // Load image for Core ML aesthetic analysis
+        guard let image = try? await photoLibraryService.getFullResolutionImage(for: photo.assetIdentifier) else {
+            return createBasicOverallScore(result: result, technicalScore: technicalScore, faceScore: faceScore, photo: photo)
+        }
+        
+        // Use Core ML enhanced aesthetic assessment
+        let coreMLAestheticResult = await coreMLAestheticService.evaluateAesthetic(for: image)
+        
+        if let coreMLResult = coreMLAestheticResult {
+            // Heavily penalize utility images identified by Core ML
+            if coreMLResult.isUtility {
+                enhancedContext = min(enhancedContext, 0.15) // Even stricter penalty for ML-detected utility images
             } else {
-                // Normalize aesthetic score from -1,1 to 0,1 and blend with basic score
+                // Blend Core ML aesthetic score with existing scores
+                enhancedContext = enhancedContext * 0.4 + coreMLResult.aestheticScore * 0.6
+            }
+        }
+        
+        // Use Vision Framework aesthetic analysis as secondary validation
+        if let aesthetics = result.aestheticAnalysis {
+            if aesthetics.isUtility && coreMLAestheticResult?.isUtility != true {
+                // Cross-validate utility detection
+                enhancedContext = min(enhancedContext, 0.25)
+            } else if !aesthetics.isUtility {
+                // Normalize aesthetic score from -1,1 to 0,1 and blend
                 let normalizedAesthetic = (aesthetics.overallScore + 1.0) / 2.0
-                enhancedContext = Float(enhancedContext * 0.3 + normalizedAesthetic * 0.7)
+                enhancedContext = enhancedContext * 0.8 + Float(normalizedAesthetic) * 0.2
             }
         }
         
@@ -214,11 +235,11 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
         let photoContext = contextService.analyzeContext(for: photo, result: result)
         let contextScore = contextService.calculateContextScore(from: photoContext)
         
-        // Blend aesthetic and contextual scoring
-        enhancedContext = enhancedContext * 0.6 + contextScore * 0.4
+        // Blend aesthetic and contextual scoring with Core ML enhancement
+        enhancedContext = enhancedContext * 0.7 + contextScore * 0.3
         
         // Scene confidence boost for clear, recognizable content
-        let sceneBonus = result.sceneConfidence * 0.08 // Up to 8% bonus (reduced to balance context)
+        let sceneBonus = result.sceneConfidence * 0.06 // Reduced to balance with Core ML scores
         enhancedContext = min(1.0, enhancedContext + sceneBonus)
         
         // Determine photo type based on enhanced analysis
@@ -237,6 +258,36 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
             context: enhancedContext,
             overall: overall
         )
+    }
+    
+    private func createBasicOverallScore(result: PhotoAnalysisResult, technicalScore: TechnicalQualityScore, faceScore: FaceQualityScore, photo: Photo) -> PhotoScore {
+        // Fallback to basic scoring if Core ML analysis fails
+        let technical = technicalScore.overall
+        let faces = faceScore.compositeScore
+        
+        var enhancedContext = Float(result.aestheticScore)
+        
+        // Use Vision Framework aesthetic analysis if available
+        if let aesthetics = result.aestheticAnalysis {
+            if aesthetics.isUtility {
+                enhancedContext = min(enhancedContext, 0.2)
+            } else {
+                let normalizedAesthetic = (aesthetics.overallScore + 1.0) / 2.0
+                enhancedContext = Float(enhancedContext * 0.3 + normalizedAesthetic * 0.7)
+            }
+        }
+        
+        let photoContext = contextService.analyzeContext(for: photo, result: result)
+        let contextScore = contextService.calculateContextScore(from: photoContext)
+        enhancedContext = enhancedContext * 0.6 + contextScore * 0.4
+        
+        let sceneBonus = result.sceneConfidence * 0.08
+        enhancedContext = min(1.0, enhancedContext + sceneBonus)
+        
+        let photoType = categorizationService.getPrimaryCategory(from: result, photo: photo)
+        let overall = PhotoScore.calculate(technical: technical, faces: faces, context: enhancedContext, photoType: photoType)
+        
+        return PhotoScore(technical: technical, faces: faces, context: enhancedContext, overall: overall)
     }
     
     private func analyzeFaceSizes(_ faces: [FaceAnalysis]) -> Bool {

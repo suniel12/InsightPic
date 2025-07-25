@@ -36,9 +36,11 @@ class PhotoClusteringServiceWithFaceRecognition: PhotoClusteringServiceProtocol 
     
     private let photoLibraryService: PhotoLibraryServiceProtocol
     private let criteria = ClusteringCriteria()
+    private let rankingService: PhotoClusterRankingService
     
     init(photoLibraryService: PhotoLibraryServiceProtocol = PhotoLibraryService()) {
         self.photoLibraryService = photoLibraryService
+        self.rankingService = PhotoClusterRankingService(photoLibraryService: photoLibraryService)
     }
     
     // MARK: - Visual Fingerprinting
@@ -392,6 +394,123 @@ class PhotoClusteringServiceWithFaceRecognition: PhotoClusteringServiceProtocol 
         
         // Fallback for edge cases
         return true
+    }
+    
+    // MARK: - Enhanced Protocol Methods (Required for Protocol Conformance)
+    
+    func rankPhotosInCluster(_ cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> PhotoCluster {
+        // Delegate to the ranking service
+        let rankingScores = await rankingService.rankPhotosInCluster(cluster, analysisResults: analysisResults)
+        
+        var updatedCluster = cluster
+        updatedCluster.rankedPhotos = rankingScores.map { $0.photo }
+        updatedCluster.clusterRepresentativePhoto = rankingScores.first?.photo
+        
+        // Calculate basic cluster quality metrics (simplified for face recognition version)
+        updatedCluster.clusterQualityMetrics = await calculateBasicClusterQualityMetrics(for: cluster, analysisResults: analysisResults)
+        
+        return updatedCluster
+    }
+    
+    func createSubClusters(for cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> [PhotoSubCluster] {
+        // Simplified sub-clustering for face recognition version
+        var subClusters: [PhotoSubCluster] = []
+        
+        // Create face-based sub-clusters
+        let faceClusters = await createFaceBasedSubClusters(for: cluster, analysisResults: analysisResults)
+        subClusters.append(contentsOf: faceClusters)
+        
+        return subClusters
+    }
+    
+    func calculateClusterQualityMetrics(for cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> ClusterQualityMetrics {
+        return await calculateBasicClusterQualityMetrics(for: cluster, analysisResults: analysisResults)
+    }
+    
+    // MARK: - Private Helper Methods for Protocol Conformance
+    
+    private func calculateBasicClusterQualityMetrics(for cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> ClusterQualityMetrics {
+        // Simplified metrics calculation for face recognition version
+        let diversityScore: Float = 0.7 // Placeholder - face recognition creates more diverse clusters
+        let representativenessScore: Float = 0.8 // Face recognition focuses on representativeness
+        let temporalCoherence = calculateTemporalCoherence(cluster: cluster)
+        let visualCoherence: Float = 0.6 // Reduced due to face-based grouping
+        let aestheticConsistency = calculateAestheticConsistency(cluster: cluster, analysisResults: analysisResults)
+        let saliencyAlignment: Float = 0.5 // Not prioritized in face recognition version
+        
+        return ClusterQualityMetrics(
+            diversityScore: diversityScore,
+            representativenessScore: representativenessScore,
+            temporalCoherence: temporalCoherence,
+            visualCoherence: visualCoherence,
+            aestheticConsistency: aestheticConsistency,
+            saliencyAlignment: saliencyAlignment
+        )
+    }
+    
+    private func createFaceBasedSubClusters(for cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> [PhotoSubCluster] {
+        var subClusters: [PhotoSubCluster] = []
+        
+        // Group photos by face count
+        let singleFacePhotos = cluster.photos.filter { photo in
+            guard let analysis = analysisResults[photo.id] else { return false }
+            return analysis.faces.count == 1
+        }
+        
+        let groupPhotos = cluster.photos.filter { photo in
+            guard let analysis = analysisResults[photo.id] else { return false }
+            return analysis.faces.count > 1
+        }
+        
+        if singleFacePhotos.count >= 2 {
+            var subCluster = PhotoSubCluster(similarityThreshold: 0.75, clusterType: .poses(threshold: 0.75))
+            subCluster.photos = singleFacePhotos
+            subClusters.append(subCluster)
+        }
+        
+        if groupPhotos.count >= 2 {
+            var subCluster = PhotoSubCluster(similarityThreshold: 0.6, clusterType: .similar(threshold: 0.6))
+            subCluster.photos = groupPhotos
+            subClusters.append(subCluster)
+        }
+        
+        return subClusters
+    }
+    
+    private func calculateTemporalCoherence(cluster: PhotoCluster) -> Float {
+        guard let timeRange = cluster.timeRange else { return 0.0 }
+        
+        let totalDuration = timeRange.end.timeIntervalSince(timeRange.start)
+        let photoCount = cluster.photos.count
+        
+        // Face recognition clustering tends to create temporally coherent clusters
+        if totalDuration <= 60.0 && photoCount >= 2 {
+            return 1.0 // Excellent for face-based clustering
+        } else if totalDuration <= 300.0 {
+            return 0.8 // Good
+        } else if totalDuration <= 1800.0 {
+            return 0.6 // Fair
+        } else {
+            return 0.3 // Poor
+        }
+    }
+    
+    private func calculateAestheticConsistency(cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) -> Float {
+        let qualityScores = cluster.photos.compactMap { photo in
+            analysisResults[photo.id]?.overallScore
+        }
+        
+        guard qualityScores.count > 1 else { return 0.5 }
+        
+        let avgQuality = qualityScores.reduce(0.0, +) / Double(qualityScores.count)
+        let variance = qualityScores.reduce(0.0) { result, score in
+            result + pow(score - avgQuality, 2)
+        } / Double(qualityScores.count)
+        
+        let standardDeviation = sqrt(variance)
+        
+        // Face recognition tends to create more aesthetically consistent clusters
+        return max(0.0, Float(1.0 - min(1.0, standardDeviation * 1.5)))
     }
     
     // MARK: - Helper Methods

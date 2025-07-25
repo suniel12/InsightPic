@@ -31,58 +31,110 @@ class PhotoClusteringViewModel: ObservableObject {
     
     /// Loads existing clusters from persistence, or creates new ones if needed
     func loadOrCreateClusters(for photos: [Photo]) async {
+        // Show progress for first-time clustering
+        isClustering = true
+        clusteringProgress = 0.0
+        clusteringText = "Checking for existing photo groups..."
+        errorMessage = nil
+        
         do {
-            // First, try to load existing clusters
+            // Phase 1: Check for existing clusters (0-10%)
+            await updateProgress(0.05, "Checking for existing photo groups...")
+            
             let existingClusters = try await photoRepository.loadClusters()
             
             // Check if we need to update clusters (new photos added, or no existing clusters)
             let needsUpdate = shouldUpdateClusters(existingClusters: existingClusters, currentPhotos: photos)
             
+            await updateProgress(0.10, "Analyzing photo collection...")
+            
             if !existingClusters.isEmpty && !needsUpdate {
-                // Use existing clusters
+                // Use existing clusters (10-100%)
+                await updateProgress(0.50, "Loading existing photo groups...")
+                
                 await MainActor.run {
                     self.clusters = existingClusters
                     self.statistics = ClusteringStatistics(clusters: existingClusters)
-                    self.findSimilarPhotoGroups()
                 }
+                
+                await updateProgress(0.80, "Organizing photo groups...")
+                findSimilarPhotoGroups()
+                
+                await updateProgress(1.0, "Found \(existingClusters.count) existing photo groups")
             } else {
-                // Create new clusters
+                // Create new clusters - clustering will manage its own progress
+                await updateProgress(0.15, "Starting photo clustering...")
                 await clusterPhotos(photos, saveResults: true)
             }
         } catch {
-            // If loading fails, create new clusters
+            // If loading fails, create new clusters - clustering will manage its own progress
+            await updateProgress(0.15, "Starting photo clustering...")
             await clusterPhotos(photos, saveResults: true)
+        }
+        
+        isClustering = false
+        
+        // Keep progress visible briefly
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.clusteringProgress = 0.0
         }
     }
     
     func clusterPhotos(_ photos: [Photo], saveResults: Bool = true) async {
+        await clusterPhotosWithProgress(photos, saveResults: saveResults, startProgress: 0.0, endProgress: 1.0)
+    }
+    
+    private func clusterPhotosWithProgress(_ photos: [Photo], saveResults: Bool = true, startProgress: Double, endProgress: Double) async {
         guard !photos.isEmpty else { return }
         
         isClustering = true
-        clusteringProgress = 0.0
+        clusteringProgress = startProgress
         clusteringText = "Starting photo clustering..."
         errorMessage = nil
         clusters = []
         statistics = nil
         
+        let progressRange = endProgress - startProgress
+        
         do {
             // Filter out screenshots before clustering
             let photosToCluster = photos.filter { !$0.isLikelyScreenshot }
             
+            await updateProgress(startProgress + 0.05 * progressRange, "Preparing \(photosToCluster.count) photos for clustering...")
+            
+            // Phase 1: Core clustering (takes 60% of progress range)
+            let clusteringEndProgress = startProgress + 0.60 * progressRange
+            
             let clusteredResults = try await clusteringService.clusterPhotos(photosToCluster) { completed, total in
                 Task { @MainActor in
-                    self.clusteringProgress = Double(completed) / Double(total)
-                    self.clusteringText = "Clustering photo \(completed) of \(total)..."
+                    let clusteringProgress = Double(completed) / Double(total)
+                    let currentProgress = startProgress + (clusteringProgress * 0.60 * progressRange)
+                    self.clusteringProgress = currentProgress
+                    
+                    // Enhanced progress text based on clustering phase
+                    if clusteringProgress < 0.7 {
+                        self.clusteringText = "Grouping photos \(completed) of \(total)..."
+                    } else if clusteringProgress < 0.98 {
+                        self.clusteringText = "Analyzing photo quality \(completed) of \(total)..."
+                    } else {
+                        self.clusteringText = "Ranking photos in groups..."
+                    }
                 }
             }
             
+            // Phase 2: Post-processing (takes 25% of progress range)
+            await updateProgress(clusteringEndProgress, "Processing \(clusteredResults.count) photo groups...")
+            
             clusters = clusteredResults
             statistics = ClusteringStatistics(clusters: clusteredResults)
-            findSimilarPhotoGroups()
-            clusteringText = "Clustering complete! Found \(clusteredResults.count) photo groups"
             
-            // Save results to persistence if requested
+            await updateProgress(startProgress + 0.75 * progressRange, "Organizing photo groups...")
+            findSimilarPhotoGroups()
+            
+            // Phase 3: Save results (takes 15% of progress range)
             if saveResults {
+                await updateProgress(startProgress + 0.85 * progressRange, "Saving photo groups...")
+                
                 do {
                     try await photoRepository.saveClusters(clusteredResults)
                     // Update cache to indicate we have analyzed photos
@@ -95,13 +147,12 @@ class PhotoClusteringViewModel: ObservableObject {
                 }
             }
             
+            await updateProgress(endProgress, "Found \(clusteredResults.count) photo groups with \(photosToCluster.count) photos!")
+            
         } catch {
             errorMessage = "Clustering failed: \(error.localizedDescription)"
             print("Photo clustering error: \(error)")
         }
-        
-        isClustering = false
-        clusteringProgress = 0.0
     }
     
     func findSimilarPhotoGroups() {
@@ -181,7 +232,14 @@ class PhotoClusteringViewModel: ObservableObject {
     }
     
     func refreshClustering(for photos: [Photo]) async {
-        await clusterPhotos(photos)
+        await clusterPhotosWithProgress(photos, saveResults: true, startProgress: 0.0, endProgress: 1.0)
+    }
+    
+    private func updateProgress(_ progress: Double, _ text: String) async {
+        await MainActor.run {
+            clusteringProgress = progress
+            clusteringText = text
+        }
     }
     
     // MARK: - Filtering and Sorting

@@ -29,12 +29,12 @@ struct ClusterPhotosView: View {
                 ProgressView()
                     .scaleEffect(1.2)
                     .foregroundStyle(.secondary)
+            } else if clusteringViewModel.isClustering {
+                // Analysis in progress (both first-time and refresh)
+                ClusterPhotosAnalysisView(clusteringViewModel: clusteringViewModel)
             } else if !hasEverAnalyzed {
                 // Onboarding state - never analyzed before
                 ClusterPhotosOnboardingView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel)
-            } else if clusteringViewModel.isClustering {
-                // Analysis in progress
-                ClusterPhotosAnalysisView(clusteringViewModel: clusteringViewModel)
             } else {
                 // Results view with cluster representatives
                 ClusterPhotosResultsView(

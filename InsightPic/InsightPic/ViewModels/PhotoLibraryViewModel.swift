@@ -84,44 +84,44 @@ class PhotoLibraryViewModel: ObservableObject {
         errorMessage = nil
         
         do {
-            // Load photos from library with progress tracking
-            loadingProgress = 0.1
-            loadingText = "Fetching photos from library..."
+            // Phase 1: Fetch limited photos from library with progress (0-30%)
+            await updateProgress(0.05, "Fetching photos from library...")
             
-            let libraryPhotos = try await photoLibraryService.fetchAllPhotos()
-            print("DEBUG: Fetched \(libraryPhotos.count) photos from photo library")
+            let photosToProcess = try await photoLibraryService.fetchLimitedPhotos(count: 100) { fetched, total in
+                Task { @MainActor in
+                    let fetchProgress = Double(fetched) / Double(total)
+                    let currentProgress = 0.05 + (fetchProgress * 0.25) // 5% to 30%
+                    self.loadingProgress = currentProgress
+                    self.loadingText = "Fetched \(fetched) of \(total) photos..."
+                }
+            }
+            print("DEBUG: Fetched \(photosToProcess.count) photos from photo library")
             
-            loadingProgress = 0.3
-            loadingText = "Processing \(libraryPhotos.count) photos..."
+            await updateProgress(0.30, "Found \(photosToProcess.count) photos for processing...")
             
-            // For testing with large libraries, limit to first 100 photos
-            let photosToProcess = Array(libraryPhotos.prefix(100))
-            print("DEBUG: Processing first \(photosToProcess.count) photos for testing")
+            // Phase 2: Save photos with dynamic progress (30-90%)
+            await updateProgress(0.35, "Saving photos to database...")
             
-            loadingProgress = 0.6
-            loadingText = "Preparing \(photosToProcess.count) photos for database..."
+            // Save photos with progress tracking
+            try await savePhotosWithProgress(photosToProcess, startProgress: 0.35, endProgress: 0.85)
             
-            loadingProgress = 0.8
-            loadingText = "Saving photos to database..."
-            
-            // Save to Core Data
-            try await photoRepository.savePhotos(photosToProcess)
             print("DEBUG: Saved \(photosToProcess.count) photos to database")
             
-            loadingProgress = 0.9
-            loadingText = "Loading from database..."
+            // Phase 3: Load from database (85-95%)
+            await updateProgress(0.85, "Loading processed photos...")
             
-            // Load from database to get complete objects
             let loadedPhotos = try await photoRepository.loadPhotos()
             print("DEBUG: Loaded \(loadedPhotos.count) photos from database")
+            
+            await updateProgress(0.95, "Finalizing...")
             
             await MainActor.run {
                 photos = loadedPhotos
                 print("DEBUG: UI updated with \(photos.count) photos")
             }
             
-            loadingProgress = 1.0
-            loadingText = "Complete! Loaded \(photos.count) photos"
+            // Complete
+            await updateProgress(1.0, "Complete! Loaded \(photos.count) photos")
             
         } catch {
             if let curatorError = error as? PhotoCuratorError {
@@ -132,7 +132,44 @@ class PhotoLibraryViewModel: ObservableObject {
         }
         
         isLoading = false
-        loadingProgress = 0.0
+        
+        // Keep progress at 100% for a moment before resetting
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.loadingProgress = 0.0
+        }
+    }
+    
+    // MARK: - Private Helper Methods
+    
+    private func updateProgress(_ progress: Double, _ text: String) async {
+        await MainActor.run {
+            loadingProgress = progress
+            loadingText = text
+        }
+    }
+    
+    private func savePhotosWithProgress(_ photos: [Photo], startProgress: Double, endProgress: Double) async throws {
+        let totalPhotos = photos.count
+        let progressRange = endProgress - startProgress
+        
+        // Process photos in smaller batches for better progress feedback
+        let batchSize = max(1, totalPhotos / 20) // 20 progress updates
+        
+        for (index, photoBatch) in photos.chunked(into: batchSize).enumerated() {
+            let currentProgress = startProgress + (Double(index * batchSize) / Double(totalPhotos)) * progressRange
+            let processedCount = min((index + 1) * batchSize, totalPhotos)
+            
+            await updateProgress(currentProgress, "Saving photos \(processedCount)/\(totalPhotos)...")
+            
+            // Save this batch
+            try await photoRepository.savePhotos(photoBatch)
+            
+            // Small delay to make progress visible
+            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+        
+        // Ensure we reach the end progress
+        await updateProgress(endProgress, "Saved \(totalPhotos) photos to database")
     }
     
     func clearDatabase() async {
@@ -260,3 +297,13 @@ extension PhotoLibraryViewModel {
     }
 }
 #endif
+
+// MARK: - Array Extension for Batching
+
+extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
+    }
+}

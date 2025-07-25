@@ -8,6 +8,7 @@ import CoreLocation
 protocol PhotoLibraryServiceProtocol {
     func requestAuthorization() async -> PHAuthorizationStatus
     func fetchAllPhotos() async throws -> [Photo]
+    func fetchLimitedPhotos(count: Int, progressCallback: @escaping (Int, Int) -> Void) async throws -> [Photo]
     func fetchPhotosInDateRange(from startDate: Date, to endDate: Date) async throws -> [Photo]
     func loadImage(for assetIdentifier: String, targetSize: CGSize) async throws -> UIImage?
     func getThumbnail(for assetIdentifier: String) async throws -> UIImage?
@@ -46,6 +47,40 @@ class PhotoLibraryService: PhotoLibraryServiceProtocol {
         
         let assets = PHAsset.fetchAssets(with: fetchOptions)
         return try await convertAssetsToPhotos(assets)
+    }
+    
+    func fetchLimitedPhotos(count: Int, progressCallback: @escaping (Int, Int) -> Void) async throws -> [Photo] {
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        fetchOptions.fetchLimit = count
+        
+        let assets = PHAsset.fetchAssets(with: fetchOptions)
+        let actualCount = min(assets.count, count)
+        var photos: [Photo] = []
+        
+        for i in 0..<actualCount {
+            let asset = assets.object(at: i)
+            
+            // Extract metadata
+            let metadata = await extractMetadata(from: asset)
+            
+            // Create Photo object
+            let photo = Photo(
+                id: UUID(),
+                assetIdentifier: asset.localIdentifier,
+                timestamp: asset.creationDate ?? Date(),
+                location: asset.location,
+                metadata: metadata
+            )
+            
+            photos.append(photo)
+            
+            // Report progress
+            progressCallback(i + 1, actualCount)
+        }
+        
+        return photos
     }
     
     func fetchPhotosInDateRange(from startDate: Date, to endDate: Date) async throws -> [Photo] {
