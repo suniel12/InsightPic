@@ -65,15 +65,15 @@ struct PhotoCluster: Identifiable, Hashable {
 }
 
 struct ClusteringCriteria {
-    // Enhanced face-aware clustering approach: Keep photos together unless significantly different
-    let visualSimilarityThreshold: Float = 0.50  // Split if <50% similar
-    let timeGapThreshold: TimeInterval = 30.0     // Split if >30 seconds from most recent (rolling window)
-    let maxClusterSize: Int = 50                  // Allow larger clusters
+    // Simplified high-level clustering criteria as specified by user
+    let visualSimilarityThreshold: Float = 0.50  // 50% similarity threshold
+    let timeGapThreshold: TimeInterval = 30.0     // 30-second rolling window
+    let locationRadiusMeters: Double = 50.0       // 50-meter location radius
+    let maxClusterSize: Int = 20                  // 20-photo cluster size limit
     
-    // Face compatibility rules:
+    // Simple face compatibility rules (no complex recognition):
     // - 0 faces: Always compatible (landscapes, objects, etc.)
-    // - 1-2 faces: Must have same face count (prevents mixing different people)
-    // - 3+ faces: Always compatible (group photos, crowds)
+    // - 1+ faces: Use basic face count grouping only
     
     // Legacy similarity definitions (for reference)
     static let sameScaneDifferentPose: Float = 0.85
@@ -153,17 +153,33 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
     // MARK: - Multi-Dimensional Clustering
     
     func clusterPhotos(_ photos: [Photo], progressCallback: @escaping (Int, Int) -> Void) async throws -> [PhotoCluster] {
+        print("DEBUG: Starting SIMPLIFIED clustering of \(photos.count) photos")
+        
+        // Process in background for better performance
+        return await withTaskGroup(of: [PhotoCluster].self) { taskGroup in
+            taskGroup.addTask {
+                await self.performSimplifiedClustering(photos, progressCallback: progressCallback)
+            }
+            
+            var allClusters: [PhotoCluster] = []
+            for await clusterBatch in taskGroup {
+                allClusters.append(contentsOf: clusterBatch)
+            }
+            
+            return allClusters
+        }
+    }
+    
+    private func performSimplifiedClustering(_ photos: [Photo], progressCallback: @escaping (Int, Int) -> Void) async -> [PhotoCluster] {
         var clusters: [PhotoCluster] = []
         let sortedPhotos = photos.sorted { $0.timestamp < $1.timestamp }
         let totalPhotos = sortedPhotos.count
         
-        print("DEBUG: Starting clustering of \(totalPhotos) photos")
-        
         for (index, photo) in sortedPhotos.enumerated() {
             // Load image for fingerprint generation
-            guard let image = try await loadImageForClustering(photo: photo) else {
+            guard let image = try? await loadImageForClustering(photo: photo) else {
                 print("Warning: Could not load image for photo \(photo.assetIdentifier)")
-                progressCallback(index + 1, totalPhotos)
+                await MainActor.run { progressCallback(index + 1, totalPhotos) }
                 continue
             }
             
@@ -171,23 +187,31 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
             let fingerprint = await generateFingerprint(for: image)
             guard let fingerprint = fingerprint else {
                 print("Warning: Could not generate fingerprint for photo \(photo.assetIdentifier)")
-                progressCallback(index + 1, totalPhotos)
+                await MainActor.run { progressCallback(index + 1, totalPhotos) }
                 continue
             }
             
-            // Find matching cluster using multi-dimensional criteria
-            let matchingCluster = await findBestMatchingCluster(
+            // Find matching cluster using simplified criteria
+            let matchingCluster = findBestMatchingClusterSimplified(
                 for: photo,
                 fingerprint: fingerprint,
-                image: image,
                 in: clusters
             )
             
             if var cluster = matchingCluster {
-                cluster.add(photo, fingerprint: fingerprint)
-                // Update the cluster in the array
-                if let clusterIndex = clusters.firstIndex(where: { $0.id == cluster.id }) {
-                    clusters[clusterIndex] = cluster
+                // Check cluster size limit before adding
+                if cluster.photos.count >= criteria.maxClusterSize {
+                    // Create sub-cluster when size limit exceeded
+                    var newCluster = PhotoCluster()
+                    newCluster.add(photo, fingerprint: fingerprint)
+                    clusters.append(newCluster)
+                    print("DEBUG: Created sub-cluster due to size limit (\(criteria.maxClusterSize))")
+                } else {
+                    cluster.add(photo, fingerprint: fingerprint)
+                    // Update the cluster in the array
+                    if let clusterIndex = clusters.firstIndex(where: { $0.id == cluster.id }) {
+                        clusters[clusterIndex] = cluster
+                    }
                 }
             } else {
                 // Create new cluster
@@ -196,63 +220,105 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
                 clusters.append(newCluster)
             }
             
-            progressCallback(index + 1, totalPhotos)
+            await MainActor.run { progressCallback(index + 1, totalPhotos) }
         }
         
-        print("DEBUG: Created \(clusters.count) clusters from \(totalPhotos) photos")
+        print("DEBUG: Created \(clusters.count) SIMPLIFIED clusters from \(totalPhotos) photos")
         
         // Log cluster statistics
         for (index, cluster) in clusters.enumerated() {
-            print("DEBUG: Cluster \(index + 1): \(cluster.photos.count) photos, timespan: \(cluster.timeRange?.start.formatted() ?? "N/A") - \(cluster.timeRange?.end.formatted() ?? "N/A")")
+            let timeSpan = cluster.timeRange?.end.timeIntervalSince(cluster.timeRange?.start ?? Date()) ?? 0
+            print("DEBUG: Cluster \(index + 1): \(cluster.photos.count) photos, \(String(format: "%.1f", timeSpan/60))min span")
         }
         
         return clusters
     }
     
-    private func findBestMatchingCluster(
+    private func findBestMatchingClusterSimplified(
         for photo: Photo,
         fingerprint: VNFeaturePrintObservation,
-        image: UIImage,
         in clusters: [PhotoCluster]
-    ) async -> PhotoCluster? {
+    ) -> PhotoCluster? {
         
-        // New inclusive clustering logic: Keep photos together UNLESS significantly different
         for cluster in clusters {
             guard let representativeFingerprint = cluster.representativeFingerprint else { continue }
             
-            // Check visual similarity (≥50% similarity to stay in same cluster)
+            // 1. Check visual similarity (≥50% as specified)
             let visualSimilarity = calculateSimilarity(fingerprint, representativeFingerprint)
-            let visuallyTooDifferent = visualSimilarity < 0.5 // Split if <50% similar
+            let visuallyCompatible = visualSimilarity >= criteria.visualSimilarityThreshold
             
-            // Check time proximity (≤30 seconds from most recent photo - rolling window)
-            let mostRecentPhoto = cluster.photos.max(by: { $0.timestamp < $1.timestamp })
-            let timeGapFromRecent = mostRecentPhoto.map { 
-                abs(photo.timestamp.timeIntervalSince($0.timestamp))
-            } ?? 0
-            let temporallyTooDistant = timeGapFromRecent > 30.0 // Split if >30 seconds from most recent
+            // 2. Check time proximity (≤30 seconds from most recent photo - rolling window)
+            let timeCompatible = isTimeCompatible(photo: photo, cluster: cluster)
             
-            // Check face compatibility (for 1-2 face photos)
-            let facesIncompatible = !(await areFacesCompatible(photo: photo, cluster: cluster, newImage: image))
+            // 3. Check location proximity (≤50 meters if location data available)
+            let locationCompatible = isLocationCompatible(photo: photo, cluster: cluster)
             
-            // Keep in same cluster UNLESS visually too different OR temporally too distant OR faces incompatible
-            let shouldSplit = visuallyTooDifferent || temporallyTooDistant || facesIncompatible
-            let matches = !shouldSplit
+            // 4. Check simple face compatibility (basic face count grouping)
+            let faceCompatible = isSimpleFaceCompatible(photo: photo, cluster: cluster)
+            
+            // Must match ALL criteria to be in same cluster
+            let matches = visuallyCompatible && timeCompatible && locationCompatible && faceCompatible
             
             if matches {
-                print("DEBUG: Photo matched cluster - Visual: \(String(format: "%.2f", visualSimilarity)), Time gap: \(String(format: "%.1f", timeGapFromRecent))s, Faces compatible: true")
+                print("DEBUG: Photo matched cluster - Visual: \(String(format: "%.2f", visualSimilarity)), Time: \(timeCompatible), Location: \(locationCompatible), Face: \(faceCompatible)")
                 return cluster
             } else {
                 var reasons: [String] = []
-                if visuallyTooDifferent { reasons.append("visual difference") }
-                if temporallyTooDistant { reasons.append("time gap") }
-                if facesIncompatible { reasons.append("face incompatibility") }
+                if !visuallyCompatible { reasons.append("visual<\(criteria.visualSimilarityThreshold)") }
+                if !timeCompatible { reasons.append("time>\(Int(criteria.timeGapThreshold))s") }
+                if !locationCompatible { reasons.append("location>\(Int(criteria.locationRadiusMeters))m") }
+                if !faceCompatible { reasons.append("face_count") }
                 
                 let reasonText = reasons.joined(separator: ", ")
-                print("DEBUG: Photo split from cluster due to \(reasonText) - Visual: \(String(format: "%.2f", visualSimilarity)), Time gap: \(String(format: "%.1f", timeGapFromRecent))s, Faces compatible: \(!facesIncompatible)")
+                print("DEBUG: Photo split from cluster due to \(reasonText)")
             }
         }
         
         return nil
+    }
+    
+    private func isTimeCompatible(photo: Photo, cluster: PhotoCluster) -> Bool {
+        // Rolling window approach: check if photo is within 30 seconds of most recent photo in cluster
+        let mostRecentPhoto = cluster.photos.max(by: { $0.timestamp < $1.timestamp })
+        let timeGapFromRecent = mostRecentPhoto.map { 
+            abs(photo.timestamp.timeIntervalSince($0.timestamp))
+        } ?? 0
+        
+        return timeGapFromRecent <= criteria.timeGapThreshold
+    }
+    
+    private func isLocationCompatible(photo: Photo, cluster: PhotoCluster) -> Bool {
+        // If either photo or cluster has no location, they're compatible
+        guard let photoLocation = photo.location,
+              let clusterLocation = cluster.centerLocation else {
+            return true
+        }
+        
+        let distance = photoLocation.distance(from: clusterLocation)
+        return distance <= criteria.locationRadiusMeters
+    }
+    
+    private func isSimpleFaceCompatible(photo: Photo, cluster: PhotoCluster) -> Bool {
+        // Simple face compatibility: use existing face count data only
+        let photoFaceCount = photo.faceQuality?.faceCount ?? 0
+        
+        // Get face count from cluster representative photo
+        guard let representativePhoto = cluster.photos.first else { return true }
+        let clusterFaceCount = representativePhoto.faceQuality?.faceCount ?? 0
+        
+        // Simple rules without complex face recognition:
+        // - 0 faces: Compatible with anything
+        // - 1+ faces: Group by similar face count ranges
+        switch (photoFaceCount, clusterFaceCount) {
+        case (0, _), (_, 0):
+            return true // No faces - always compatible
+        case (1, 1), (2, 2):
+            return true // Same small face count
+        case (1...2, 3...), (3..., 1...2):
+            return false // Don't mix individual/couple photos with group photos
+        default:
+            return true // Groups with groups are compatible
+        }
     }
     
     // MARK: - Similar Photo Detection
@@ -278,88 +344,16 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
         return [photos] // Return all photos as one group for now
     }
     
-    // MARK: - Face Compatibility Analysis
+    // MARK: - Performance Optimizations
     
-    private func areFacesCompatible(photo: Photo, cluster: PhotoCluster, newImage: UIImage) async -> Bool {
-        // Try to get face count from existing data first
-        var newPhotoFaceCount = photo.faceQuality?.faceCount ?? -1
-        
-        // If no face data exists, perform face detection on the fly
-        if newPhotoFaceCount == -1 {
-            newPhotoFaceCount = await detectFaceCount(in: newImage)
-        }
-        
-        // Get representative face count from cluster
-        guard let representativePhoto = cluster.photos.first else { return true }
-        var clusterFaceCount = representativePhoto.faceQuality?.faceCount ?? -1
-        
-        // If cluster photo doesn't have face data, we'll assume compatibility for now
-        // (In a full implementation, we'd cache face counts during clustering)
-        if clusterFaceCount == -1 {
-            clusterFaceCount = 0 // Default to no faces
-        }
-        
-        // Debug logging
-        print("DEBUG: Face compatibility check - New photo faces: \(newPhotoFaceCount), Cluster faces: \(clusterFaceCount)")
-        
-        // Face compatibility rules:
-        // - 0 faces: Always compatible (landscapes, objects, etc.)
-        // - 1-2 faces: Must have same face count to be compatible (different people)
-        // - 3+ faces: Always compatible (group photos, crowds)
-        
-        switch (newPhotoFaceCount, clusterFaceCount) {
-        case (0, _), (_, 0):
-            // At least one photo has no faces - always compatible
-            return true
-        case (1...2, 1...2):
-            // Both have 1-2 faces - must have same count for compatibility
-            // This prevents mixing individual portraits of different people
-            let compatible = newPhotoFaceCount == clusterFaceCount
-            print("DEBUG: Face compatibility result: \(compatible) (both have 1-2 faces)")
-            return compatible
-        case (let new, let cluster) where new >= 3 || cluster >= 3:
-            // Group photos (3+ faces) are always compatible with anything
-            return true
-        default:
-            return true
-        }
-    }
-    
-    private func detectFaceCount(in image: UIImage) async -> Int {
-        return await withCheckedContinuation { continuation in
-            guard let cgImage = image.cgImage else {
-                continuation.resume(returning: 0)
-                return
-            }
-            
-            let request = VNDetectFaceRectanglesRequest { request, error in
-                if let error = error {
-                    print("Face detection failed: \(error)")
-                    continuation.resume(returning: 0)
-                    return
-                }
-                
-                let faceCount = request.results?.count ?? 0
-                print("DEBUG: Detected \(faceCount) faces in image")
-                continuation.resume(returning: faceCount)
-            }
-            
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            
-            do {
-                try handler.perform([request])
-            } catch {
-                print("Face detection handler failed: \(error)")
-                continuation.resume(returning: 0)
-            }
-        }
-    }
+    // Removed complex face recognition for performance
+    // Using simple face count compatibility instead
     
     // MARK: - Helper Methods
     
     private func loadImageForClustering(photo: Photo) async throws -> UIImage? {
-        // Load a smaller version for clustering to improve performance
-        return try await photoLibraryService.loadImage(for: photo.assetIdentifier, targetSize: CGSize(width: 512, height: 512))
+        // Load an even smaller version for clustering to improve performance
+        return try await photoLibraryService.loadImage(for: photo.assetIdentifier, targetSize: CGSize(width: 256, height: 256))
     }
 }
 
