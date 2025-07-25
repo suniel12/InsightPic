@@ -31,6 +31,7 @@ class PhotoClusteringViewModel: ObservableObject {
     
     /// Loads existing clusters from persistence, or creates new ones if needed
     func loadOrCreateClusters(for photos: [Photo]) async {
+        print("DEBUG: loadOrCreateClusters started, setting isClustering = true")
         // Show progress for first-time clustering
         isClustering = true
         clusteringProgress = 0.0
@@ -72,6 +73,7 @@ class PhotoClusteringViewModel: ObservableObject {
             await clusterPhotos(photos, saveResults: true)
         }
         
+        print("DEBUG: Setting isClustering = false, clusters count: \(clusters.count)")
         isClustering = false
         
         // Keep progress visible briefly

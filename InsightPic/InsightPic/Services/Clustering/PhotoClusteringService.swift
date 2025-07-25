@@ -152,6 +152,9 @@ struct ClusteringCriteria {
     let locationRadiusMeters: Double = 50.0       // 50-meter location radius
     let maxClusterSize: Int = 20                  // 20-photo cluster size limit
     
+    // Burst mode: Photos within this window are automatically clustered together
+    let burstModeTimeWindow: TimeInterval = 10.0  // 10-second burst mode window
+    
     // Simple face compatibility rules (no complex recognition):
     // - 0 faces: Always compatible (landscapes, objects, etc.)
     // - 1+ faces: Use basic face count grouping only
@@ -541,52 +544,83 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
         let sortedPhotos = photos.sorted { $0.timestamp < $1.timestamp }
         let totalPhotos = sortedPhotos.count
         
-        for (index, photo) in sortedPhotos.enumerated() {
-            // Load image for fingerprint generation
-            guard let image = try? await loadImageForClustering(photo: photo) else {
-                print("Warning: Could not load image for photo \(photo.assetIdentifier)")
-                await MainActor.run { progressCallback(index + 1, totalPhotos) }
-                continue
-            }
+        // Process in small batches to prevent memory issues and crashes
+        let batchSize = 5 // Process max 5 photos at a time
+        var processedCount = 0
+        
+        for batchStart in stride(from: 0, to: totalPhotos, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, totalPhotos)
+            let batch = Array(sortedPhotos[batchStart..<batchEnd])
             
-            // Generate visual fingerprint
-            let fingerprint = await generateFingerprint(for: image)
-            guard let fingerprint = fingerprint else {
-                print("Warning: Could not generate fingerprint for photo \(photo.assetIdentifier)")
-                await MainActor.run { progressCallback(index + 1, totalPhotos) }
-                continue
-            }
-            
-            // Find matching cluster using simplified criteria
-            let matchingCluster = findBestMatchingClusterSimplified(
-                for: photo,
-                fingerprint: fingerprint,
-                in: clusters
-            )
-            
-            if var cluster = matchingCluster {
-                // Check cluster size limit before adding
-                if cluster.photos.count >= criteria.maxClusterSize {
-                    // Create sub-cluster when size limit exceeded
-                    var newCluster = PhotoCluster()
-                    newCluster.add(photo, fingerprint: fingerprint)
-                    clusters.append(newCluster)
-                    print("DEBUG: Created sub-cluster due to size limit (\(criteria.maxClusterSize))")
-                } else {
-                    cluster.add(photo, fingerprint: fingerprint)
-                    // Update the cluster in the array
-                    if let clusterIndex = clusters.firstIndex(where: { $0.id == cluster.id }) {
-                        clusters[clusterIndex] = cluster
+            // Process each photo in the current batch
+            for photo in batch {
+                processedCount += 1
+                
+                // Load image for fingerprint generation with error handling
+                guard let image = try? await loadImageForClustering(photo: photo) else {
+                    print("Warning: Could not load image for photo \(photo.assetIdentifier)")
+                    await MainActor.run { progressCallback(processedCount, totalPhotos) }
+                    continue
+                }
+                
+                // Generate visual fingerprint with retry logic
+                var fingerprint: VNFeaturePrintObservation?
+                var retryCount = 0
+                let maxRetries = 2
+                
+                while fingerprint == nil && retryCount < maxRetries {
+                    fingerprint = await generateFingerprint(for: image)
+                    if fingerprint == nil {
+                        retryCount += 1
+                        print("Warning: Fingerprint generation failed for \(photo.assetIdentifier), retry \(retryCount)/\(maxRetries)")
+                        // Small delay before retry to reduce memory pressure
+                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
                     }
                 }
-            } else {
-                // Create new cluster
-                var newCluster = PhotoCluster()
-                newCluster.add(photo, fingerprint: fingerprint)
-                clusters.append(newCluster)
+                
+                guard let validFingerprint = fingerprint else {
+                    print("Error: Could not generate fingerprint for photo \(photo.assetIdentifier) after \(maxRetries) retries")
+                    await MainActor.run { progressCallback(processedCount, totalPhotos) }
+                    continue
+                }
+            
+                // Find matching cluster using simplified criteria
+                let matchingCluster = findBestMatchingClusterSimplified(
+                    for: photo,
+                    fingerprint: validFingerprint,
+                    in: clusters
+                )
+                
+                if var cluster = matchingCluster {
+                    // Check cluster size limit before adding
+                    if cluster.photos.count >= criteria.maxClusterSize {
+                        // Create sub-cluster when size limit exceeded
+                        var newCluster = PhotoCluster()
+                        newCluster.add(photo, fingerprint: validFingerprint)
+                        clusters.append(newCluster)
+                        print("DEBUG: Created sub-cluster due to size limit (\(criteria.maxClusterSize))")
+                    } else {
+                        cluster.add(photo, fingerprint: validFingerprint)
+                        // Update the cluster in the array
+                        if let clusterIndex = clusters.firstIndex(where: { $0.id == cluster.id }) {
+                            clusters[clusterIndex] = cluster
+                        }
+                    }
+                } else {
+                    // Create new cluster
+                    var newCluster = PhotoCluster()
+                    newCluster.add(photo, fingerprint: validFingerprint)
+                    clusters.append(newCluster)
+                }
+                
+                await MainActor.run { progressCallback(processedCount, totalPhotos) }
             }
             
-            await MainActor.run { progressCallback(index + 1, totalPhotos) }
+            // Memory cleanup between batches to prevent overwhelming the system
+            if batchEnd < totalPhotos {
+                // Force memory cleanup between batches
+                autoreleasepool { }
+            }
         }
         
         print("DEBUG: Created \(clusters.count) SIMPLIFIED clusters from \(totalPhotos) photos")
@@ -609,6 +643,15 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
         for cluster in clusters {
             guard let representativeFingerprint = cluster.representativeFingerprint else { continue }
             
+            // BURST MODE: Photos within 10 seconds are automatically clustered together
+            // This overrides all other criteria for rapid-fire photography
+            let burstModeCompatible = isBurstModeCompatible(photo: photo, cluster: cluster)
+            if burstModeCompatible {
+                print("DEBUG: Photo matched via BURST MODE - within \(criteria.burstModeTimeWindow) seconds")
+                return cluster
+            }
+            
+            // Regular clustering logic for photos outside burst mode window
             // 1. Check visual similarity (≥50% as specified)
             let visualSimilarity = calculateSimilarity(fingerprint, representativeFingerprint)
             let visuallyCompatible = visualSimilarity >= criteria.visualSimilarityThreshold
@@ -643,6 +686,20 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
         return nil
     }
     
+    private func isBurstModeCompatible(photo: Photo, cluster: PhotoCluster) -> Bool {
+        // Check if photo is within burst mode window of ANY photo in the cluster
+        // This is for rapid-fire photography where photos are taken in quick succession
+        
+        for clusterPhoto in cluster.photos {
+            let timeDifference = abs(photo.timestamp.timeIntervalSince(clusterPhoto.timestamp))
+            if timeDifference <= criteria.burstModeTimeWindow {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
     private func isTimeCompatible(photo: Photo, cluster: PhotoCluster) -> Bool {
         // Rolling window approach: check if photo is within 30 seconds of most recent photo in cluster
         let mostRecentPhoto = cluster.photos.max(by: { $0.timestamp < $1.timestamp })
@@ -665,25 +722,49 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
     }
     
     private func isSimpleFaceCompatible(photo: Photo, cluster: PhotoCluster) -> Bool {
-        // Simple face compatibility: use existing face count data only
+        // Improved face compatibility: handle detection variations and be more tolerant
         let photoFaceCount = photo.faceQuality?.faceCount ?? 0
         
-        // Get face count from cluster representative photo
-        guard let representativePhoto = cluster.photos.first else { return true }
-        let clusterFaceCount = representativePhoto.faceQuality?.faceCount ?? 0
+        // Check face compatibility against ALL photos in cluster, not just representative
+        // This handles cases where face detection varies within the same session
+        let clusterFaceCounts = cluster.photos.compactMap { $0.faceQuality?.faceCount }
         
-        // Simple rules without complex face recognition:
-        // - 0 faces: Compatible with anything
-        // - 1+ faces: Group by similar face count ranges
+        // If no face data available, be permissive
+        if clusterFaceCounts.isEmpty {
+            return true
+        }
+        
+        // More flexible face compatibility rules:
+        // - Handle detection variations (0-1 faces often same subject)
+        // - Allow small variations in face count for same session
+        // - Still separate individual photos from large groups
+        
+        for clusterFaceCount in clusterFaceCounts {
+            // Use if-else logic instead of switch to avoid exhaustive case issues
+            let isCompatible = isCompatibleFaceCount(photoFaceCount: photoFaceCount, clusterFaceCount: clusterFaceCount)
+            if isCompatible {
+                return true
+            }
+        }
+        
+        return false // Default to not compatible if no matches found
+    }
+    
+    private func isCompatibleFaceCount(photoFaceCount: Int, clusterFaceCount: Int) -> Bool {
+        // Handle detection variations and allow small face count variations within same session
         switch (photoFaceCount, clusterFaceCount) {
-        case (0, _), (_, 0):
-            return true // No faces - always compatible
-        case (1, 1), (2, 2):
-            return true // Same small face count
-        case (1...2, 3...), (3..., 1...2):
-            return false // Don't mix individual/couple photos with group photos
-        default:
+        case (0, 0), (0, 1), (1, 0), (1, 1):
+            return true // Handle detection variations for single subjects
+        case (2, 2), (2, 1), (1, 2):
+            return true // Handle detection variations for couples
+        case (0...2, 0...2):
+            return true // Allow small face count variations within same session
+        case (3..., 3...):
             return true // Groups with groups are compatible
+        case (0...2, 3...), (3..., 0...2):
+            return false // Still separate individual/couple photos from group photos
+        default:
+            return false // Default case to handle any other combinations
         }
     }
     

@@ -81,9 +81,21 @@ struct ClusterPhotosView: View {
             // When clustering completes and we have results, auto-transition to results view
             if !isClustering && !clusteringViewModel.clusters.isEmpty {
                 Task {
+                    // Always load cluster representatives when clustering completes
                     await loadClusterRepresentatives()
-                    if !hasEverAnalyzed {
-                        hasEverAnalyzed = true
+                    
+                    await MainActor.run {
+                        if !hasEverAnalyzed {
+                            // First-time clustering: Update state and show results permanently
+                            hasEverAnalyzed = true
+                            print("DEBUG: First-time clustering complete - showing results permanently")
+                        } else {
+                            // Refresh clustering: Show results permanently (same as first-time)
+                            print("DEBUG: Refresh clustering complete - showing results permanently")
+                        }
+                        
+                        // Both first-time and refresh: Stay in results view permanently
+                        // User can manually dismiss using cross button when ready
                     }
                 }
             }
@@ -94,7 +106,8 @@ struct ClusterPhotosView: View {
     }
     
     private func refreshAnalysis() async {
-        await clusteringViewModel.clusterPhotos(photoViewModel.photos, saveResults: true)
+        // Use the exact same method as first-time clustering for identical UI flow
+        await clusteringViewModel.loadOrCreateClusters(for: photoViewModel.photos)
     }
     
     private func checkForExistingResults() async {
