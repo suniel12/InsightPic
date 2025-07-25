@@ -253,7 +253,7 @@ struct ClustersView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 8) {
                     ForEach(sortedClusters) { cluster in
-                        ClusterThumbnailView(
+                        ClusteringThumbnailView(
                             cluster: cluster,
                             photoViewModel: photoViewModel
                         ) {
@@ -269,7 +269,7 @@ struct ClustersView: View {
 
 // MARK: - Cluster Thumbnail View
 
-struct ClusterThumbnailView: View {
+struct ClusteringThumbnailView: View {
     let cluster: PhotoCluster
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     let onTap: () -> Void

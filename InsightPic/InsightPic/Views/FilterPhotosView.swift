@@ -546,40 +546,7 @@ struct FilteredPhotoThumbnailView: View {
         .aspectRatio(1, contentMode: .fill)
         .clipped()
         .cornerRadius(8)
-        .overlay(
-            // Relevance score and category indicators
-            VStack {
-                HStack {
-                    Spacer()
-                    Text("\(Int(filteredPhoto.relevanceScore * 100))%")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.black.opacity(0.7))
-                        .cornerRadius(4)
-                        .padding(4)
-                }
-                Spacer()
-                
-                // Category indicators
-                if !filteredPhoto.matchingCategories.isEmpty {
-                    HStack {
-                        ForEach(Array(filteredPhoto.matchingCategories.prefix(3)), id: \.self) { category in
-                            Image(systemName: category.icon)
-                                .font(.system(size: 8))
-                                .foregroundColor(.white)
-                                .padding(2)
-                                .background(.black.opacity(0.7))
-                                .cornerRadius(2)
-                        }
-                        Spacer()
-                    }
-                    .padding(4)
-                }
-            }
-        )
+        // Clean view without score overlays - removed as requested
         .onTapGesture {
             showingDetailView = true
         }

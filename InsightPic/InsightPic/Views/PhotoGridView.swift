@@ -5,6 +5,7 @@ struct PhotoGridView: View {
     @State private var showingSettings = false
     @State private var showingFilter = false
     @State private var showingFilterPhotos = false
+    @State private var showingClusterPhotos = false
     @State private var qualityFilter: QualityFilter = .all
     
     private let columns = [
@@ -112,11 +113,18 @@ struct PhotoGridView: View {
                 
                 Spacer()
                 
-                // Bottom floating heart button with glass effect
+                // Bottom floating buttons with glass effect
                 if !viewModel.photos.isEmpty {
                     HStack {
                         Spacer()
                         
+                        // Cluster button
+                        GlassClusterButton(action: { showingClusterPhotos = true })
+                        
+                        Spacer()
+                            .frame(width: 16) // Space between buttons
+                        
+                        // Filter button
                         GlassFilterButton(action: { showingFilterPhotos = true })
                     }
                     .padding(.horizontal, 20)
@@ -133,6 +141,9 @@ struct PhotoGridView: View {
             }
             .fullScreenCover(isPresented: $showingFilterPhotos) {
                 FilterPhotosView(photoViewModel: viewModel)
+            }
+            .fullScreenCover(isPresented: $showingClusterPhotos) {
+                ClusterPhotosView(photoViewModel: viewModel)
             }
             .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") {
@@ -665,6 +676,53 @@ struct GlassHeartButton: View {
     }
 }
 
+struct GlassClusterButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "circle.grid.2x2.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 60, height: 60)
+                .background(
+                    ZStack {
+                        // Main colored background with glass effect
+                        Circle()
+                            .fill(.thinMaterial)
+                            .background(
+                                Circle()
+                                    .fill(Color.purple) // Different color for cluster
+                            )
+                        
+                        // Glass overlay effect
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        .white.opacity(0.3),
+                                        .white.opacity(0.1),
+                                        .clear,
+                                        .black.opacity(0.1)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                        
+                        // Subtle border
+                        Circle()
+                            .stroke(.white.opacity(0.3), lineWidth: 1)
+                    }
+                )
+                .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 6)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .scaleEffect(1.0)
+        .animation(.easeInOut(duration: 0.1), value: false)
+    }
+}
+
 struct GlassFilterButton: View {
     let action: () -> Void
     
@@ -709,6 +767,87 @@ struct GlassFilterButton: View {
         .buttonStyle(PlainButtonStyle())
         .scaleEffect(1.0)
         .animation(.easeInOut(duration: 0.1), value: false)
+    }
+}
+
+struct GlassDoneButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+                .background(
+                    ZStack {
+                        // Glass background effect
+                        RoundedRectangle(cornerRadius: 22)
+                            .fill(.ultraThinMaterial)
+                        
+                        // Subtle border
+                        RoundedRectangle(cornerRadius: 22)
+                            .stroke(.white.opacity(0.2), lineWidth: 0.5)
+                    }
+                )
+                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct GlassRefreshButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+                .background(
+                    ZStack {
+                        // Glass background effect
+                        RoundedRectangle(cornerRadius: 22)
+                            .fill(.ultraThinMaterial)
+                        
+                        // Subtle border
+                        RoundedRectangle(cornerRadius: 22)
+                            .stroke(.white.opacity(0.2), lineWidth: 0.5)
+                    }
+                )
+                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct FeatureRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 28, height: 28)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            
+            Spacer()
+        }
+        .padding(.horizontal, 4)
     }
 }
 

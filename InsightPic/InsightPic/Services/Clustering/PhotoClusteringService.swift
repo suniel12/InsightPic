@@ -5,12 +5,21 @@ import CoreLocation
 
 // MARK: - Clustering Models
 
-struct PhotoCluster: Identifiable {
+struct PhotoCluster: Identifiable, Hashable {
     let id = UUID()
     var photos: [Photo] = []
     var representativeFingerprint: VNFeaturePrintObservation?
     var centerLocation: CLLocation?
     var timeRange: (start: Date, end: Date)?
+    
+    // Hashable conformance
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    static func == (lhs: PhotoCluster, rhs: PhotoCluster) -> Bool {
+        lhs.id == rhs.id
+    }
     
     var medianTimestamp: Date {
         let sorted = photos.map(\.timestamp).sorted()
@@ -201,32 +210,25 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
         in clusters: [PhotoCluster]
     ) -> PhotoCluster? {
         
+        // Enhanced clustering logic: BOTH similarity AND time must match for burst detection
         return clusters.first { cluster in
             guard let representativeFingerprint = cluster.representativeFingerprint else { return false }
             
-            // Check visual similarity
+            // Check visual similarity (must be ≥80%)
             let visualSimilarity = calculateSimilarity(fingerprint, representativeFingerprint)
-            let visualMatch = visualSimilarity > criteria.visualSimilarity
+            let visualMatch = visualSimilarity >= 0.8 // 80% similarity threshold
             
-            // Check time proximity
-            let timeDifference = abs(photo.timestamp.timeIntervalSince(cluster.medianTimestamp))
-            let timeMatch = timeDifference < criteria.timeWindowSeconds
-            
-            // Check location proximity (if both have location)
-            var locationMatch = true // Default to true if no location data
-            if let photoLocation = photo.location,
-               let clusterLocation = cluster.centerLocation {
-                let distance = photoLocation.distance(from: clusterLocation)
-                locationMatch = distance < criteria.locationRadiusMeters
+            // Check time proximity (must be ≤5 seconds from any photo in cluster)
+            let timeMatch = cluster.photos.contains { clusterPhoto in
+                let timeDifference = abs(photo.timestamp.timeIntervalSince(clusterPhoto.timestamp))
+                return timeDifference <= 5.0 // 5-second window for burst detection
             }
             
-            // Check cluster size limit
-            let sizeLimit = cluster.photos.count < criteria.maxClusterSize
-            
-            let matches = visualMatch && timeMatch && locationMatch && sizeLimit
+            // BOTH criteria must be met for burst photography clustering
+            let matches = visualMatch && timeMatch
             
             if matches {
-                print("DEBUG: Photo matched cluster - Visual: \(String(format: "%.2f", visualSimilarity)), Time: \(Int(timeDifference))s, Size: \(cluster.photos.count)")
+                print("DEBUG: Photo matched cluster - Visual: \(String(format: "%.2f", visualSimilarity)), Burst detection successful")
             }
             
             return matches

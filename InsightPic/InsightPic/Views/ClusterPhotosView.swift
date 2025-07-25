@@ -1,12 +1,15 @@
 import SwiftUI
 
-struct CuratedBestPhotosView: View {
+struct ClusterPhotosView: View {
     @StateObject private var clusteringViewModel = PhotoClusteringViewModel()
+    @StateObject private var curationService = ClusterCurationService()
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     @Environment(\.dismiss) private var dismiss
     
     @State private var hasEverAnalyzed = false
     @State private var isCheckingForExistingResults = true
+    @State private var clusterRepresentatives: [ClusterRepresentative] = []
+    @State private var selectedCluster: PhotoCluster?
     
     private let columns = [
         GridItem(.adaptive(minimum: 120, maximum: 150), spacing: 2),
@@ -28,13 +31,20 @@ struct CuratedBestPhotosView: View {
                     .foregroundStyle(.secondary)
             } else if !hasEverAnalyzed {
                 // Onboarding state - never analyzed before
-                BestPhotosOnboardingView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel)
+                ClusterPhotosOnboardingView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel)
             } else if clusteringViewModel.isClustering {
                 // Analysis in progress
-                BestPhotosAnalysisView(clusteringViewModel: clusteringViewModel)
+                ClusterPhotosAnalysisView(clusteringViewModel: clusteringViewModel)
             } else {
-                // Results view
-                BestPhotosResultsView(clusteringViewModel: clusteringViewModel, photoViewModel: photoViewModel, columns: columns)
+                // Results view with cluster representatives
+                ClusterPhotosResultsView(
+                    clusterRepresentatives: clusterRepresentatives,
+                    photoViewModel: photoViewModel,
+                    columns: columns,
+                    onClusterTap: { cluster in
+                        selectedCluster = cluster
+                    }
+                )
             }
             
             // Floating Glass Navigation
@@ -49,7 +59,7 @@ struct CuratedBestPhotosView: View {
                     if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
                         GlassRefreshButton(action: {
                             Task {
-                                await clusteringViewModel.clusterPhotos(photoViewModel.photos, saveResults: true)
+                                await refreshAnalysis()
                             }
                         })
                     }
@@ -66,10 +76,22 @@ struct CuratedBestPhotosView: View {
         }
         .onChange(of: clusteringViewModel.isClustering) { _, isClustering in
             // When clustering completes and we have results, auto-transition to results view
-            if !isClustering && !clusteringViewModel.clusters.isEmpty && !hasEverAnalyzed {
-                hasEverAnalyzed = true
+            if !isClustering && !clusteringViewModel.clusters.isEmpty {
+                Task {
+                    await loadClusterRepresentatives()
+                    if !hasEverAnalyzed {
+                        hasEverAnalyzed = true
+                    }
+                }
             }
         }
+        .fullScreenCover(item: $selectedCluster) { cluster in
+            ClusterMomentsDetailView(cluster: cluster, photoViewModel: photoViewModel, curationService: curationService)
+        }
+    }
+    
+    private func refreshAnalysis() async {
+        await clusteringViewModel.clusterPhotos(photoViewModel.photos, saveResults: true)
     }
     
     private func checkForExistingResults() async {
@@ -81,28 +103,31 @@ struct CuratedBestPhotosView: View {
             isCheckingForExistingResults = false
         }
         
-        // If we have cached results, load clusters in background
+        // If we have cached results, load cluster representatives in background
         if cachedHasAnalyzed {
-            Task.detached { [weak clusteringViewModel] in
-                do {
-                    let existingClusters = try await clusteringViewModel?.loadExistingClusters() ?? []
-                    await MainActor.run {
-                        clusteringViewModel?.clusters = existingClusters
-                        // Calculate statistics off main thread
-                        Task.detached {
-                            let stats = ClusteringStatistics(clusters: existingClusters)
-                            await MainActor.run {
-                                clusteringViewModel?.statistics = stats
-                            }
-                        }
-                    }
-                } catch {
-                    // If loading fails, update cache
-                    await MainActor.run {
-                        UserDefaults.standard.set(false, forKey: "hasEverAnalyzedPhotos")
-                        self.hasEverAnalyzed = false
-                    }
-                }
+            await loadClusterRepresentatives()
+        }
+    }
+    
+    private func loadClusterRepresentatives() async {
+        do {
+            // Load clusters from existing analysis
+            let existingClusters = try await clusteringViewModel.loadExistingClusters()
+            await MainActor.run {
+                clusteringViewModel.clusters = existingClusters
+            }
+            
+            // Generate cluster representatives
+            let representatives = await curationService.curateClusterRepresentatives(from: existingClusters)
+            
+            await MainActor.run {
+                self.clusterRepresentatives = representatives
+            }
+            
+        } catch {
+            // If loading fails, will need to run analysis
+            await MainActor.run {
+                hasEverAnalyzed = false
             }
         }
     }
@@ -110,7 +135,7 @@ struct CuratedBestPhotosView: View {
 
 // MARK: - Onboarding View
 
-struct BestPhotosOnboardingView: View {
+struct ClusterPhotosOnboardingView: View {
     let clusteringViewModel: PhotoClusteringViewModel
     let photoViewModel: PhotoLibraryViewModel
     
@@ -120,22 +145,22 @@ struct BestPhotosOnboardingView: View {
                 // Icon
                 ZStack {
                     Circle()
-                        .fill(Color.accentColor.opacity(0.1))
+                        .fill(Color.purple.opacity(0.1))
                         .frame(width: 100, height: 100)
                     
-                    Image(systemName: "heart.fill")
+                    Image(systemName: "circle.grid.2x2.fill")
                         .font(.system(size: 40, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Color.purple)
                 }
                 
                 // Title and description
                 VStack(spacing: 12) {
-                    Text("Find Your Best Photos")
+                    Text("Discover Important Moments")
                         .font(.title2)
                         .fontWeight(.semibold)
                         .multilineTextAlignment(.center)
                     
-                    Text("AI will analyze your \(photoViewModel.photos.count) photos to find the highest quality images and eliminate duplicates.")
+                    Text("AI will analyze your \(photoViewModel.photos.count) photos to find important moments where you took multiple photos, then show you the best photo from each moment.")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -145,9 +170,9 @@ struct BestPhotosOnboardingView: View {
             
             // Features list
             VStack(spacing: 16) {
-                FeatureRow(icon: "sparkles", title: "Smart Quality Analysis", description: "Technical quality, composition, and facial recognition")
-                FeatureRow(icon: "photo.stack", title: "Duplicate Detection", description: "Groups similar photos and picks the best from each")
-                FeatureRow(icon: "eye.slash", title: "Screenshot Filtering", description: "Automatically excludes screenshots and screen recordings")
+                FeatureRow(icon: "camera.burst", title: "Burst Detection", description: "Groups photos taken within 5 seconds")
+                FeatureRow(icon: "brain.head.profile", title: "Smart Similarity", description: "Uses AI to identify visually similar photos")
+                FeatureRow(icon: "star.bubble", title: "Moment Ranking", description: "Larger clusters indicate more important moments")
             }
             
             Spacer()
@@ -159,12 +184,12 @@ struct BestPhotosOnboardingView: View {
                         await clusteringViewModel.loadOrCreateClusters(for: photoViewModel.photos)
                     }
                 }) {
-                    Text("Find Best Photos")
+                    Text("Find Important Moments")
                         .font(.headline)
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .background(Color.accentColor)
+                        .background(Color.purple)
                         .cornerRadius(12)
                 }
                 
@@ -179,12 +204,9 @@ struct BestPhotosOnboardingView: View {
     }
 }
 
-// MARK: - Feature Row
-
-
 // MARK: - Analysis Progress View
 
-struct BestPhotosAnalysisView: View {
+struct ClusterPhotosAnalysisView: View {
     @ObservedObject var clusteringViewModel: PhotoClusteringViewModel
     
     var body: some View {
@@ -192,17 +214,17 @@ struct BestPhotosAnalysisView: View {
             // Animated icon
             ZStack {
                 Circle()
-                    .fill(Color.accentColor.opacity(0.1))
+                    .fill(Color.purple.opacity(0.1))
                     .frame(width: 100, height: 100)
                 
-                Image(systemName: "heart.fill")
+                Image(systemName: "circle.grid.2x2.fill")
                     .font(.system(size: 40, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Color.purple)
                     .symbolEffect(.pulse, isActive: clusteringViewModel.isClustering)
             }
             
             VStack(spacing: 16) {
-                Text("Analyzing Your Photos")
+                Text("Finding Important Moments")
                     .font(.title2)
                     .fontWeight(.semibold)
                 
@@ -213,7 +235,7 @@ struct BestPhotosAnalysisView: View {
                 
                 VStack(spacing: 12) {
                     ProgressView(value: clusteringViewModel.clusteringProgress, total: 1.0)
-                        .progressViewStyle(LinearProgressViewStyle(tint: Color.accentColor))
+                        .progressViewStyle(LinearProgressViewStyle(tint: Color.purple))
                         .frame(maxWidth: 280)
                         .scaleEffect(y: 1.5)
                     
@@ -230,59 +252,78 @@ struct BestPhotosAnalysisView: View {
 
 // MARK: - Results View
 
-struct BestPhotosResultsView: View {
-    @ObservedObject var clusteringViewModel: PhotoClusteringViewModel
+struct ClusterPhotosResultsView: View {
+    let clusterRepresentatives: [ClusterRepresentative]
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     let columns: [GridItem]
+    let onClusterTap: (PhotoCluster) -> Void
     
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 32) {
-                // Best photos grid
-                let recommendedPhotos = clusteringViewModel.getRecommendedPhotos(count: 20)
+        VStack(spacing: 0) {
+            // Results header
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(clusterRepresentatives.count) Important Moments")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    
+                    let totalPhotos = clusterRepresentatives.reduce(0) { $0 + $1.clusterSize }
+                    Text("\(totalPhotos) photos in \(clusterRepresentatives.count) clusters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 
-                if !recommendedPhotos.isEmpty {
-                    LazyVGrid(columns: columns, spacing: 4) {
-                        ForEach(recommendedPhotos) { photo in
-                            CuratedPhotoThumbnailView(photo: photo, photoViewModel: photoViewModel)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                } else {
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            
+            // Cluster grid
+            ScrollView {
+                if clusterRepresentatives.isEmpty {
                     // Empty state
                     VStack(spacing: 16) {
-                        Image(systemName: "photo.badge.plus")
+                        Image(systemName: "circle.grid.2x2")
                             .font(.system(size: 48, weight: .light))
                             .foregroundStyle(.tertiary)
                         
                         VStack(spacing: 4) {
-                            Text("No Best Photos Found")
+                            Text("No Important Moments Found")
                                 .font(.headline)
                             
-                            Text("Try analyzing more photos or adjusting quality settings")
+                            Text("Try taking more photos or analyzing a larger library")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
                         }
                     }
-                    .padding(.vertical, 40)
+                    .padding(.vertical, 60)
+                } else {
+                    LazyVGrid(columns: columns, spacing: 4) {
+                        ForEach(clusterRepresentatives, id: \.id) { representative in
+                            ClusterThumbnailView(
+                                representative: representative,
+                                photoViewModel: photoViewModel,
+                                onTap: { onClusterTap(representative.cluster) }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 8)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 20)
         }
     }
 }
 
-// MARK: - Best Photo Thumbnail View
+// MARK: - Cluster Thumbnail View (without score overlays)
 
-struct CuratedPhotoThumbnailView: View {
-    let photo: Photo
+struct ClusterThumbnailView: View {
+    let representative: ClusterRepresentative
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
+    let onTap: () -> Void
     
     @State private var thumbnailImage: UIImage?
     @State private var isLoading = true
-    @State private var showingDetailView = false
     
     var body: some View {
         Group {
@@ -312,30 +353,41 @@ struct CuratedPhotoThumbnailView: View {
         .clipped()
         .cornerRadius(8)
         .overlay(
-            // Quality indicator
+            // Clean cluster info badge (no scores)
             VStack {
                 HStack {
                     Spacer()
-                    if let score = photo.overallScore?.overall {
-                        Text("\(Int(score * 100))%")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.black.opacity(0.7))
-                            .cornerRadius(4)
-                            .padding(4)
-                    }
+                    
+                    // Cluster size badge
+                    Text("\(representative.clusterSize)")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.black.opacity(0.7))
+                        .cornerRadius(4)
+                        .padding(4)
                 }
                 Spacer()
+                
+                // Importance indicator
+                if representative.isImportantMoment {
+                    HStack {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 8))
+                            .foregroundColor(.yellow)
+                            .padding(2)
+                            .background(.black.opacity(0.7))
+                            .cornerRadius(2)
+                        Spacer()
+                    }
+                    .padding(4)
+                }
             }
         )
         .onTapGesture {
-            showingDetailView = true
-        }
-        .fullScreenCover(isPresented: $showingDetailView) {
-            PhotoDetailView(photo: photo, viewModel: photoViewModel)
+            onTap()
         }
         .onAppear {
             loadThumbnail()
@@ -345,7 +397,7 @@ struct CuratedPhotoThumbnailView: View {
     private func loadThumbnail() {
         Task {
             isLoading = true
-            let image = await photoViewModel.loadThumbnail(for: photo)
+            let image = await photoViewModel.loadThumbnail(for: representative.bestPhoto)
             await MainActor.run {
                 self.thumbnailImage = image
                 self.isLoading = false
@@ -354,12 +406,8 @@ struct CuratedPhotoThumbnailView: View {
     }
 }
 
-// MARK: - Glass Navigation Components
-
-
-
 // MARK: - Preview
 
 #Preview {
-    CuratedBestPhotosView(photoViewModel: PhotoLibraryViewModel.preview)
+    ClusterPhotosView(photoViewModel: PhotoLibraryViewModel.preview)
 }
