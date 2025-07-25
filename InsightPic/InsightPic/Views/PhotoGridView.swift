@@ -361,6 +361,7 @@ struct SettingsView: View {
     @State private var showingPhotoClustering = false
     @State private var showingScoredPhotos = false
     @State private var showingFilterPhotos = false
+    @State private var showingAnalysisData = false
     
     var body: some View {
         NavigationStack {
@@ -399,6 +400,11 @@ struct SettingsView: View {
                     
                     Button("Filter & Sort Photos") {
                         showingFilterPhotos = true
+                    }
+                    .disabled(viewModel.photos.isEmpty)
+                    
+                    Button("Debug Analysis Data") {
+                        showingAnalysisData = true
                     }
                     .disabled(viewModel.photos.isEmpty)
                 } header: {
@@ -451,6 +457,9 @@ struct SettingsView: View {
             }
             .fullScreenCover(isPresented: $showingFilterPhotos) {
                 FilterPhotosView(photoViewModel: viewModel)
+            }
+            .fullScreenCover(isPresented: $showingAnalysisData) {
+                PhotoAnalysisDataView(photoViewModel: viewModel)
             }
         }
     }
