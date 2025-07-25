@@ -50,18 +50,21 @@ struct ClusterPhotosView: View {
             // Floating Glass Navigation
             VStack {
                 HStack {
-                    // Glass Done button
-                    GlassDoneButton(action: { dismiss() })
-                    
                     Spacer()
                     
-                    // Glass Refresh button (when results exist)
-                    if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
-                        GlassRefreshButton(action: {
-                            Task {
-                                await refreshAnalysis()
-                            }
-                        })
+                    // Glass buttons on the right side
+                    HStack(spacing: 12) {
+                        // Glass Refresh button (when results exist)
+                        if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
+                            GlassRefreshButton(action: {
+                                Task {
+                                    await refreshAnalysis()
+                                }
+                            })
+                        }
+                        
+                        // Glass Done button
+                        GlassDoneButton(action: { dismiss() })
                     }
                 }
                 .padding(.horizontal, 20)
@@ -160,7 +163,7 @@ struct ClusterPhotosOnboardingView: View {
                         .fontWeight(.semibold)
                         .multilineTextAlignment(.center)
                     
-                    Text("AI will analyze your \(photoViewModel.photos.count) photos to find important moments where you took multiple photos, then show you the best photo from each moment.")
+                    Text("AI will analyze your \(photoViewModel.photos.count) photos using visual similarity, timing, and face recognition to create smart groups that separate different people and photo sessions.")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -170,9 +173,9 @@ struct ClusterPhotosOnboardingView: View {
             
             // Features list
             VStack(spacing: 16) {
-                FeatureRow(icon: "camera.burst", title: "Burst Detection", description: "Groups photos taken within 5 seconds")
-                FeatureRow(icon: "brain.head.profile", title: "Smart Similarity", description: "Uses AI to identify visually similar photos")
-                FeatureRow(icon: "star.bubble", title: "Moment Ranking", description: "Larger clusters indicate more important moments")
+                FeatureRow(icon: "clock", title: "Rolling Window", description: "Groups photos taken within 30 seconds of each other")
+                FeatureRow(icon: "person.2.fill", title: "Face-Aware", description: "Separates different people into different clusters")
+                FeatureRow(icon: "brain.head.profile", title: "Smart Similarity", description: "Keeps visually similar photos together (≥50%)")
             }
             
             Spacer()
@@ -184,7 +187,7 @@ struct ClusterPhotosOnboardingView: View {
                         await clusteringViewModel.loadOrCreateClusters(for: photoViewModel.photos)
                     }
                 }) {
-                    Text("Find Important Moments")
+                    Text("Group Photo Sessions")
                         .font(.headline)
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
@@ -224,7 +227,7 @@ struct ClusterPhotosAnalysisView: View {
             }
             
             VStack(spacing: 16) {
-                Text("Finding Important Moments")
+                Text("Grouping Photo Sessions")
                     .font(.title2)
                     .fontWeight(.semibold)
                 
@@ -263,7 +266,7 @@ struct ClusterPhotosResultsView: View {
             // Results header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(clusterRepresentatives.count) Important Moments")
+                    Text("\(clusterRepresentatives.count) Photo Sessions")
                         .font(.title3)
                         .fontWeight(.semibold)
                     
@@ -288,7 +291,7 @@ struct ClusterPhotosResultsView: View {
                             .foregroundStyle(.tertiary)
                         
                         VStack(spacing: 4) {
-                            Text("No Important Moments Found")
+                            Text("No Photo Sessions Found")
                                 .font(.headline)
                             
                             Text("Try taking more photos or analyzing a larger library")

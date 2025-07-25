@@ -339,11 +339,16 @@ struct PhotoThumbnailView: View {
             }
         }
         .fullScreenCover(isPresented: $showingDetailView) {
-            PhotoDetailView(photo: photo, viewModel: viewModel)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.95)),
-                    removal: .opacity.combined(with: .scale(scale: 1.05))
-                ))
+            PhotoDetailGalleryView(
+                initialPhoto: photo,
+                photos: viewModel.photos,
+                viewModel: viewModel,
+                showPhotoCounter: true
+            )
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                removal: .opacity.combined(with: .scale(scale: 1.05))
+            ))
         }
         .onAppear {
             loadThumbnail()

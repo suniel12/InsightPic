@@ -54,18 +54,21 @@ struct FilterPhotosView: View {
             // Floating Glass Navigation
             VStack {
                 HStack {
-                    // Glass Done button
-                    GlassDoneButton(action: { dismiss() })
-                    
                     Spacer()
                     
-                    // Glass Refresh button (when results exist)
-                    if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
-                        GlassRefreshButton(action: {
-                            Task {
-                                await refreshAnalysis()
-                            }
-                        })
+                    // Glass buttons on the right side
+                    HStack(spacing: 12) {
+                        // Glass Refresh button (when results exist)
+                        if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
+                            GlassRefreshButton(action: {
+                                Task {
+                                    await refreshAnalysis()
+                                }
+                            })
+                        }
+                        
+                        // Glass Done button
+                        GlassDoneButton(action: { dismiss() })
                     }
                 }
                 .padding(.horizontal, 20)
@@ -428,6 +431,7 @@ struct FilterPhotosResultsView: View {
                         ForEach(filteredPhotos, id: \.photo.id) { filteredPhoto in
                             FilteredPhotoThumbnailView(
                                 filteredPhoto: filteredPhoto,
+                                allFilteredPhotos: filteredPhotos,
                                 photoViewModel: photoViewModel
                             )
                         }
@@ -513,6 +517,7 @@ struct CategoryChip: View {
 
 struct FilteredPhotoThumbnailView: View {
     let filteredPhoto: FilteredPhoto
+    let allFilteredPhotos: [FilteredPhoto]
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     
     @State private var thumbnailImage: UIImage?
@@ -551,7 +556,12 @@ struct FilteredPhotoThumbnailView: View {
             showingDetailView = true
         }
         .fullScreenCover(isPresented: $showingDetailView) {
-            PhotoDetailView(photo: filteredPhoto.photo, viewModel: photoViewModel)
+            PhotoDetailGalleryView(
+                initialPhoto: filteredPhoto.photo,
+                photos: allFilteredPhotos.map { $0.photo },
+                viewModel: photoViewModel,
+                showPhotoCounter: true
+            )
         }
         .onAppear {
             loadThumbnail()

@@ -244,7 +244,7 @@ struct BestPhotosResultsView: View {
                 if !recommendedPhotos.isEmpty {
                     LazyVGrid(columns: columns, spacing: 4) {
                         ForEach(recommendedPhotos) { photo in
-                            CuratedPhotoThumbnailView(photo: photo, photoViewModel: photoViewModel)
+                            CuratedPhotoThumbnailView(photo: photo, allPhotos: recommendedPhotos, photoViewModel: photoViewModel)
                         }
                     }
                     .padding(.horizontal, 8)
@@ -278,6 +278,7 @@ struct BestPhotosResultsView: View {
 
 struct CuratedPhotoThumbnailView: View {
     let photo: Photo
+    let allPhotos: [Photo]
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     
     @State private var thumbnailImage: UIImage?
@@ -335,7 +336,12 @@ struct CuratedPhotoThumbnailView: View {
             showingDetailView = true
         }
         .fullScreenCover(isPresented: $showingDetailView) {
-            PhotoDetailView(photo: photo, viewModel: photoViewModel)
+            PhotoDetailGalleryView(
+                initialPhoto: photo,
+                photos: allPhotos,
+                viewModel: photoViewModel,
+                showPhotoCounter: true
+            )
         }
         .onAppear {
             loadThumbnail()

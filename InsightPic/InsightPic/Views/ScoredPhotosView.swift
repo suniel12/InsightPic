@@ -89,6 +89,7 @@ struct ScoredPhotosView: View {
                             ForEach(scoredPhotos) { photo in
                                 ScoredPhotoThumbnailView(
                                     photo: photo,
+                                    allPhotos: scoredPhotos,
                                     viewModel: photoViewModel,
                                     showScore: selectedQualityFilter != .unscored
                                 )
@@ -161,6 +162,7 @@ struct ScoredPhotosView: View {
 
 struct ScoredPhotoThumbnailView: View {
     let photo: Photo
+    let allPhotos: [Photo]
     let viewModel: PhotoLibraryViewModel
     let showScore: Bool
     
@@ -222,11 +224,16 @@ struct ScoredPhotoThumbnailView: View {
             }
         }
         .fullScreenCover(isPresented: $showingDetailView) {
-            PhotoDetailView(photo: photo, viewModel: viewModel)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.95)),
-                    removal: .opacity.combined(with: .scale(scale: 1.05))
-                ))
+            PhotoDetailGalleryView(
+                initialPhoto: photo,
+                photos: allPhotos,
+                viewModel: viewModel,
+                showPhotoCounter: true
+            )
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                removal: .opacity.combined(with: .scale(scale: 1.05))
+            ))
         }
         .onAppear {
             loadThumbnail()

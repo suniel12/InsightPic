@@ -71,10 +71,10 @@ struct ClusterMomentsDetailView: View {
             // Floating Glass Navigation
             VStack {
                 HStack {
-                    // Glass Done button
-                    GlassDoneButton(action: { dismiss() })
-                    
                     Spacer()
+                    
+                    // Glass Done button on the right side
+                    GlassDoneButton(action: { dismiss() })
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 8)
@@ -87,10 +87,11 @@ struct ClusterMomentsDetailView: View {
             await loadSortedPhotos()
         }
         .fullScreenCover(item: $selectedPhoto) { photo in
-            ClusterMomentsPhotoDetailView(
+            PhotoDetailGalleryView(
                 initialPhoto: photo,
                 photos: sortedPhotos,
-                photoViewModel: photoViewModel
+                viewModel: photoViewModel,
+                showPhotoCounter: true
             )
         }
     }
@@ -163,7 +164,7 @@ struct ClusterMomentsInfoHeader: View {
         VStack(spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Moment • \(photoCount) Photos")
+                    Text("Photo Session • \(photoCount) Photos")
                         .font(.title3)
                         .fontWeight(.semibold)
                     
@@ -307,118 +308,6 @@ struct ClusterMomentsPhotoThumbnailView: View {
     }
 }
 
-// MARK: - Cluster Photo Detail View with Swipe Navigation
-
-struct ClusterMomentsPhotoDetailView: View {
-    let initialPhoto: Photo
-    let photos: [Photo]
-    @ObservedObject var photoViewModel: PhotoLibraryViewModel
-    @Environment(\.dismiss) private var dismiss
-    
-    @State private var currentPhotoIndex: Int = 0
-    
-    var currentPhoto: Photo {
-        guard currentPhotoIndex >= 0 && currentPhotoIndex < photos.count else {
-            return initialPhoto
-        }
-        return photos[currentPhotoIndex]
-    }
-    
-    var body: some View {
-        ZStack {
-            Color.black
-                .ignoresSafeArea(.all)
-            
-            // Photo display with swipe navigation
-            PhotoDetailView(photo: currentPhoto, viewModel: photoViewModel)
-                .gesture(
-                    DragGesture()
-                        .onEnded { value in
-                            let threshold: CGFloat = 50
-                            
-                            if value.translation.width > threshold {
-                                // Swipe right - previous photo
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    if currentPhotoIndex > 0 {
-                                        currentPhotoIndex -= 1
-                                    }
-                                }
-                            } else if value.translation.width < -threshold {
-                                // Swipe left - next photo
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    if currentPhotoIndex < photos.count - 1 {
-                                        currentPhotoIndex += 1
-                                    }
-                                }
-                            }
-                        }
-                )
-            
-            // Navigation indicators
-            VStack {
-                HStack {
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
-                    }
-                    
-                    Spacer()
-                    
-                    // Photo counter
-                    Text("\(currentPhotoIndex + 1) of \(photos.count)")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(12)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                
-                Spacer()
-                
-                // Swipe indicators
-                HStack {
-                    if currentPhotoIndex > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                                .font(.caption)
-                            Text("Previous")
-                                .font(.caption)
-                        }
-                        .foregroundColor(.white.opacity(0.7))
-                    }
-                    
-                    Spacer()
-                    
-                    if currentPhotoIndex < photos.count - 1 {
-                        HStack(spacing: 4) {
-                            Text("Next")
-                                .font(.caption)
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                        }
-                        .foregroundColor(.white.opacity(0.7))
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 40)
-            }
-        }
-        .onAppear {
-            // Set initial photo index
-            if let index = photos.firstIndex(where: { $0.id == initialPhoto.id }) {
-                currentPhotoIndex = index
-            }
-        }
-    }
-}
 
 // MARK: - Photo Item for fullScreenCover
 

@@ -383,6 +383,102 @@ struct PhotoInfoView: View {
 }
 
 
+// MARK: - Universal Photo Gallery View with Swipe Navigation
+
+struct PhotoDetailGalleryView: View {
+    let initialPhoto: Photo
+    let photos: [Photo]
+    @ObservedObject var viewModel: PhotoLibraryViewModel
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var currentPhotoIndex: Int
+    @State private var showPhotoCounter: Bool = true
+    
+    init(initialPhoto: Photo, photos: [Photo], viewModel: PhotoLibraryViewModel, showPhotoCounter: Bool = true) {
+        self.initialPhoto = initialPhoto
+        self.photos = photos
+        self.viewModel = viewModel
+        self.showPhotoCounter = showPhotoCounter
+        
+        // Set the initial index to the selected photo
+        if let index = photos.firstIndex(where: { $0.id == initialPhoto.id }) {
+            self._currentPhotoIndex = State(initialValue: index)
+        } else {
+            self._currentPhotoIndex = State(initialValue: 0)
+        }
+    }
+    
+    var currentPhoto: Photo {
+        guard currentPhotoIndex >= 0 && currentPhotoIndex < photos.count else {
+            return initialPhoto
+        }
+        return photos[currentPhotoIndex]
+    }
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            // Photo display with universal swipe navigation
+            PhotoDetailView(photo: currentPhoto, viewModel: viewModel)
+                .id(currentPhoto.id) // Force view recreation when photo changes
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 20)
+                        .onEnded { value in
+                            let threshold: CGFloat = 50
+                            let velocity = value.velocity.width
+                            
+                            // Only handle horizontal swipes when there are multiple photos
+                            guard photos.count > 1 else { return }
+                            
+                            // Check if it's a horizontal swipe (not vertical dismiss)
+                            if abs(value.translation.width) > abs(value.translation.height) * 1.5 {
+                                if value.translation.width > threshold || velocity > 400 {
+                                    // Swipe right - previous photo
+                                    withAnimation(.easeInOut(duration: 0.25)) {
+                                        if currentPhotoIndex > 0 {
+                                            currentPhotoIndex -= 1
+                                        }
+                                    }
+                                } else if value.translation.width < -threshold || velocity < -400 {
+                                    // Swipe left - next photo
+                                    withAnimation(.easeInOut(duration: 0.25)) {
+                                        if currentPhotoIndex < photos.count - 1 {
+                                            currentPhotoIndex += 1
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                )
+            
+            // Photo counter overlay (only show if more than 1 photo and enabled)
+            if showPhotoCounter && photos.count > 1 {
+                VStack {
+                    HStack {
+                        Spacer()
+                        
+                        Text("\(currentPhotoIndex + 1) of \(photos.count)")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(12)
+                        
+                        Spacer()
+                    }
+                    .padding(.top, 8)
+                    
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 // MARK: - Preview
 
 #Preview {
