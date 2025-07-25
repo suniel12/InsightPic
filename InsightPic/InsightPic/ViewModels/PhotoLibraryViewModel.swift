@@ -142,6 +142,8 @@ class PhotoLibraryViewModel: ObservableObject {
         do {
             try await photoRepository.clearAllPhotos()
             photos = []
+            // Clear the analysis cache as well
+            UserDefaults.standard.set(false, forKey: "hasEverAnalyzedPhotos")
             loadingText = "Database cleared"
             print("DEBUG: Database cleared successfully")
         } catch {

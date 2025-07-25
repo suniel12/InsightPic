@@ -36,12 +36,35 @@ struct PhotoScore: Codable {
         
         let score: Float
         switch photoType {
-        case .multipleFaces:
-            score = normalizedTechnical * 0.3 + normalizedFaces * 0.5 + normalizedContext * 0.2
-        case .landscape:
-            score = normalizedTechnical * 0.5 + normalizedContext * 0.4 + normalizedFaces * 0.1
+        // Person-focused photos
         case .portrait:
             score = normalizedTechnical * 0.4 + normalizedFaces * 0.4 + normalizedContext * 0.2
+        case .groupPhoto, .multipleFaces:
+            score = normalizedTechnical * 0.3 + normalizedFaces * 0.5 + normalizedContext * 0.2
+        case .event:
+            score = normalizedTechnical * 0.25 + normalizedFaces * 0.45 + normalizedContext * 0.3
+            
+        // Scenery-focused photos
+        case .landscape, .outdoor:
+            score = normalizedTechnical * 0.5 + normalizedContext * 0.4 + normalizedFaces * 0.1
+        case .goldenHour:
+            score = normalizedTechnical * 0.4 + normalizedContext * 0.5 + normalizedFaces * 0.1
+            
+        // Technical/artistic photos
+        case .closeUp:
+            score = normalizedTechnical * 0.6 + normalizedContext * 0.3 + normalizedFaces * 0.1
+        case .action:
+            score = normalizedTechnical * 0.3 + normalizedContext * 0.5 + normalizedFaces * 0.2
+        case .lowLight:
+            score = normalizedTechnical * 0.7 + normalizedContext * 0.2 + normalizedFaces * 0.1
+            
+        // Environment-based
+        case .indoor:
+            score = normalizedTechnical * 0.45 + normalizedFaces * 0.35 + normalizedContext * 0.2
+            
+        // Utility/low priority
+        case .utility:
+            score = max(0.1, min(0.3, normalizedTechnical * 0.8 + normalizedContext * 0.2)) // Cap utility photos
         }
         
         return max(0, min(1, score))

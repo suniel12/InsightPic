@@ -85,6 +85,10 @@ class PhotoClusteringViewModel: ObservableObject {
             if saveResults {
                 do {
                     try await photoRepository.saveClusters(clusteredResults)
+                    // Update cache to indicate we have analyzed photos
+                    await MainActor.run {
+                        UserDefaults.standard.set(true, forKey: "hasEverAnalyzedPhotos")
+                    }
                 } catch {
                     print("Failed to save clusters: \(error)")
                     // Don't fail the clustering operation if save fails

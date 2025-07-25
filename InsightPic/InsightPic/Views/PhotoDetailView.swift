@@ -42,15 +42,6 @@ struct PhotoDetailView: View {
             VStack {
                 if showControls {
                     HStack {
-                        Button("Done") {
-                            withAnimation(.easeInOut(duration: 0.25)) {
-                                dismiss()
-                            }
-                        }
-                        .foregroundColor(.white)
-                        .font(.system(size: 17, weight: .medium))
-                        .padding(.leading, 16)
-                        
                         Spacer()
                         
                         Button(action: { 
@@ -370,13 +361,6 @@ struct PhotoInfoView: View {
             }
             .navigationTitle("Info")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
         }
     }
     

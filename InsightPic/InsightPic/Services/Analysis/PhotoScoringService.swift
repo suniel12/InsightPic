@@ -25,13 +25,19 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
     private let analysisService: PhotoAnalysisServiceProtocol
     private let photoRepository: PhotoDataRepositoryProtocol
     private let photoLibraryService: PhotoLibraryServiceProtocol
+    private let categorizationService: PhotoCategorizationServiceProtocol
+    private let contextService: PhotoContextServiceProtocol
     
     init(analysisService: PhotoAnalysisServiceProtocol = PhotoAnalysisService(),
          photoRepository: PhotoDataRepositoryProtocol = PhotoDataRepository(),
-         photoLibraryService: PhotoLibraryServiceProtocol = PhotoLibraryService()) {
+         photoLibraryService: PhotoLibraryServiceProtocol = PhotoLibraryService(),
+         categorizationService: PhotoCategorizationServiceProtocol = PhotoCategorizationService(),
+         contextService: PhotoContextServiceProtocol = PhotoContextService()) {
         self.analysisService = analysisService
         self.photoRepository = photoRepository
         self.photoLibraryService = photoLibraryService
+        self.categorizationService = categorizationService
+        self.contextService = contextService
     }
     
     // MARK: - Public Methods
@@ -119,10 +125,19 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
     // MARK: - Private Conversion Methods
     
     private func createTechnicalScore(from result: PhotoAnalysisResult) -> TechnicalQualityScore {
+        // Enhanced composition scoring with saliency analysis
+        var enhancedComposition = Float(result.compositionScore)
+        
+        // Boost composition score if saliency analysis shows good composition
+        if let saliency = result.saliencyAnalysis {
+            let saliencyBonus = saliency.compositionScore * 0.3 // Up to 30% bonus
+            enhancedComposition = min(1.0, enhancedComposition + saliencyBonus)
+        }
+        
         return TechnicalQualityScore(
             sharpness: Float(result.sharpnessScore),
             exposure: Float(result.exposureScore),
-            composition: Float(result.compositionScore)
+            composition: enhancedComposition
         )
     }
     
@@ -132,11 +147,39 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
         }
         
         let faceCount = result.faces.count
-        let averageQuality = result.faces.reduce(0.0) { $0 + $1.faceQuality } / Double(faceCount)
         
-        // Analyze face characteristics
+        // Enhanced face quality calculation with pose and expression analysis
+        var totalQualityScore = 0.0
+        var validFaceCount = 0
+        
+        for face in result.faces {
+            var faceScore = face.faceQuality
+            
+            // Bonus for good pose (face looking toward camera)
+            if let pose = face.pose {
+                let poseQuality = calculatePoseQuality(pose)
+                faceScore += Double(poseQuality) * 0.2 // Up to 20% bonus
+            }
+            
+            // Expression bonus for smiles
+            if face.isSmiling == true {
+                faceScore += 0.15 // 15% bonus for smiling
+            }
+            
+            // Eyes open bonus
+            if face.eyesOpen == true {
+                faceScore += 0.1 // 10% bonus for eyes open
+            }
+            
+            totalQualityScore += min(1.0, faceScore)
+            validFaceCount += 1
+        }
+        
+        let averageQuality = validFaceCount > 0 ? totalQualityScore / Double(validFaceCount) : 0.0
+        
+        // Analyze face characteristics with enhanced logic
         let eyesOpen = result.faces.allSatisfy { $0.eyesOpen ?? true }
-        let goodExpressions = result.faces.allSatisfy { $0.isSmiling ?? true }
+        let goodExpressions = analyzeExpressions(result.faces)
         let optimalSizes = analyzeFaceSizes(result.faces)
         
         return FaceQualityScore(
@@ -151,22 +194,47 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
     private func createOverallScore(from result: PhotoAnalysisResult, technicalScore: TechnicalQualityScore, faceScore: FaceQualityScore, photo: Photo) -> PhotoScore {
         let technical = technicalScore.overall
         let faces = faceScore.compositeScore
-        let context = Float(result.aestheticScore)
         
-        // Determine photo type based on analysis
-        let photoType = determinePhotoType(from: result)
+        // Enhanced context scoring with comprehensive context analysis
+        var enhancedContext = Float(result.aestheticScore)
+        
+        // Use Vision Framework aesthetic analysis if available
+        if let aesthetics = result.aestheticAnalysis {
+            // Heavily penalize utility images (screenshots, documents)
+            if aesthetics.isUtility {
+                enhancedContext = min(enhancedContext, 0.2) // Cap utility images at 20%
+            } else {
+                // Normalize aesthetic score from -1,1 to 0,1 and blend with basic score
+                let normalizedAesthetic = (aesthetics.overallScore + 1.0) / 2.0
+                enhancedContext = Float(enhancedContext * 0.3 + normalizedAesthetic * 0.7)
+            }
+        }
+        
+        // Comprehensive context analysis
+        let photoContext = contextService.analyzeContext(for: photo, result: result)
+        let contextScore = contextService.calculateContextScore(from: photoContext)
+        
+        // Blend aesthetic and contextual scoring
+        enhancedContext = enhancedContext * 0.6 + contextScore * 0.4
+        
+        // Scene confidence boost for clear, recognizable content
+        let sceneBonus = result.sceneConfidence * 0.08 // Up to 8% bonus (reduced to balance context)
+        enhancedContext = min(1.0, enhancedContext + sceneBonus)
+        
+        // Determine photo type based on enhanced analysis
+        let photoType = categorizationService.getPrimaryCategory(from: result, photo: photo)
         
         let overall = PhotoScore.calculate(
             technical: technical,
             faces: faces,
-            context: context,
+            context: enhancedContext,
             photoType: photoType
         )
         
         return PhotoScore(
             technical: technical,
             faces: faces,
-            context: context,
+            context: enhancedContext,
             overall: overall
         )
     }
@@ -187,16 +255,63 @@ class PhotoScoringService: PhotoScoringServiceProtocol {
         } else if faceCount == 1 {
             return .portrait
         } else {
-            // Check for landscape indicators in objects
-            let landscapeKeywords = ["mountain", "tree", "sky", "water", "landscape", "nature", "outdoor"]
+            // Enhanced landscape detection using objects and aesthetic analysis
+            let landscapeKeywords = ["mountain", "tree", "sky", "water", "landscape", "nature", "outdoor", "scenery", "field", "forest", "beach", "sunset", "sunrise"]
             let hasLandscapeObjects = result.objects.contains { object in
                 landscapeKeywords.contains { keyword in
                     object.identifier.lowercased().contains(keyword)
                 }
             }
             
-            return hasLandscapeObjects ? .landscape : .portrait
+            // Also check for high aesthetic score without utility flag (often landscapes)
+            let isAestheticLandscape = result.aestheticAnalysis?.isUtility == false && 
+                                     (result.aestheticAnalysis?.overallScore ?? -1) > 0.3
+            
+            return (hasLandscapeObjects || isAestheticLandscape) ? .landscape : .portrait
         }
+    }
+    
+    // MARK: - Enhanced Analysis Helper Methods
+    
+    private func calculatePoseQuality(_ pose: FacePose) -> Float {
+        var poseScore: Float = 1.0
+        
+        // Penalize extreme poses (face turned too far from camera)
+        if let yaw = pose.yaw {
+            let yawPenalty = min(abs(yaw) / 45.0, 1.0) // Penalize yaw > 45 degrees
+            poseScore -= yawPenalty * 0.3
+        }
+        
+        if let pitch = pose.pitch {
+            let pitchPenalty = min(abs(pitch) / 30.0, 1.0) // Penalize pitch > 30 degrees
+            poseScore -= pitchPenalty * 0.2
+        }
+        
+        if let roll = pose.roll {
+            let rollPenalty = min(abs(roll) / 20.0, 1.0) // Penalize roll > 20 degrees
+            poseScore -= rollPenalty * 0.1
+        }
+        
+        return max(0.0, poseScore)
+    }
+    
+    private func analyzeExpressions(_ faces: [FaceAnalysis]) -> Bool {
+        guard !faces.isEmpty else { return false }
+        
+        // Consider expressions "good" if majority are smiling or neutral
+        let smilingCount = faces.filter { $0.isSmiling == true }.count
+        let neutralCount = faces.filter { $0.isSmiling == nil }.count
+        let goodExpressionCount = smilingCount + neutralCount
+        
+        return Float(goodExpressionCount) / Float(faces.count) >= 0.6 // 60% threshold
+    }
+    
+    private func isGoldenHour(_ timestamp: Date) -> Bool {
+        let calendar = Calendar.current
+        let hour = calendar.component(.hour, from: timestamp)
+        
+        // Golden hour: 6-8 AM or 6-8 PM
+        return (hour >= 6 && hour <= 8) || (hour >= 18 && hour <= 20)
     }
 }
 

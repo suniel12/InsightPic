@@ -150,12 +150,46 @@ enum TimeOfDay: String, CaseIterable {
     }
 }
 
-enum PhotoType {
-    case multipleFaces
-    case landscape
-    case portrait
+enum PhotoType: String, CaseIterable {
+    case portrait = "Portrait"
+    case groupPhoto = "Group Photo"
+    case landscape = "Landscape"
+    case closeUp = "Close-up"
+    case event = "Event"
+    case indoor = "Indoor"
+    case outdoor = "Outdoor"
+    case action = "Action"
+    case lowLight = "Low Light"
+    case goldenHour = "Golden Hour"
+    case utility = "Utility" // Screenshots, documents, etc.
+    
+    // Legacy support
+    case multipleFaces = "Multiple Faces"
+    
+    var description: String {
+        return self.rawValue
+    }
+    
+    var isPersonFocused: Bool {
+        switch self {
+        case .portrait, .groupPhoto, .multipleFaces:
+            return true
+        default:
+            return false
+        }
+    }
+    
+    var isSceneryFocused: Bool {
+        switch self {
+        case .landscape, .outdoor, .goldenHour:
+            return true
+        default:
+            return false
+        }
+    }
     
     static func detect(from photo: Photo) -> PhotoType {
+        // Basic face-based detection (legacy)
         if let faceQuality = photo.faceQuality, faceQuality.faceCount > 1 {
             return .multipleFaces
         } else if let faceQuality = photo.faceQuality, faceQuality.faceCount == 1 {

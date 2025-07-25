@@ -162,10 +162,14 @@ extension PhotoAnalysisViewModel {
                 sharpnessScore: 0.9,
                 exposureScore: 0.8,
                 compositionScore: 0.85,
-                faces: [FaceAnalysis(boundingBox: CGRect(x: 0.3, y: 0.3, width: 0.4, height: 0.4), confidence: 0.95, faceQuality: 0.9, isSmiling: true, eyesOpen: true)],
+                faces: [FaceAnalysis(boundingBox: CGRect(x: 0.3, y: 0.3, width: 0.4, height: 0.4), confidence: 0.95, faceQuality: 0.9, isSmiling: true, eyesOpen: true, landmarks: nil, pose: nil, recognitionID: nil)],
                 objects: [ObjectAnalysis(identifier: "person", confidence: 0.9, boundingBox: CGRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6))],
                 aestheticScore: 0.8,
-                timestamp: Date()
+                timestamp: Date(),
+                aestheticAnalysis: nil,
+                saliencyAnalysis: nil,
+                dominantColors: nil,
+                sceneConfidence: 0.9
             ),
             PhotoAnalysisResult(
                 photoId: UUID(),
@@ -177,7 +181,11 @@ extension PhotoAnalysisViewModel {
                 faces: [],
                 objects: [ObjectAnalysis(identifier: "landscape", confidence: 0.8, boundingBox: CGRect(x: 0, y: 0, width: 1, height: 1))],
                 aestheticScore: 0.7,
-                timestamp: Date().addingTimeInterval(-3600)
+                timestamp: Date().addingTimeInterval(-3600),
+                aestheticAnalysis: nil,
+                saliencyAnalysis: nil,
+                dominantColors: nil,
+                sceneConfidence: 0.8
             )
         ]
         

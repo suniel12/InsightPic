@@ -4,7 +4,7 @@ struct PhotoGridView: View {
     @StateObject private var viewModel = PhotoLibraryViewModel()
     @State private var showingSettings = false
     @State private var showingFilter = false
-    @State private var showingBestPhotos = false
+    @State private var showingFilterPhotos = false
     @State private var qualityFilter: QualityFilter = .all
     
     private let columns = [
@@ -117,7 +117,7 @@ struct PhotoGridView: View {
                     HStack {
                         Spacer()
                         
-                        GlassHeartButton(action: { showingBestPhotos = true })
+                        GlassFilterButton(action: { showingFilterPhotos = true })
                     }
                     .padding(.horizontal, 20)
                     .padding(.bottom, 34) // Above home indicator
@@ -131,8 +131,8 @@ struct PhotoGridView: View {
             .sheet(isPresented: $showingFilter) {
                 QualityFilterView(selectedFilter: $qualityFilter, photoCount: viewModel.photos.count, viewModel: viewModel)
             }
-            .fullScreenCover(isPresented: $showingBestPhotos) {
-                CuratedBestPhotosView(photoViewModel: viewModel)
+            .fullScreenCover(isPresented: $showingFilterPhotos) {
+                FilterPhotosView(photoViewModel: viewModel)
             }
             .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") {
@@ -360,6 +360,7 @@ struct SettingsView: View {
     @State private var showingPhotoScoring = false
     @State private var showingPhotoClustering = false
     @State private var showingScoredPhotos = false
+    @State private var showingFilterPhotos = false
     
     var body: some View {
         NavigationStack {
@@ -396,8 +397,8 @@ struct SettingsView: View {
                     }
                     .disabled(viewModel.photos.isEmpty)
                     
-                    Button("Find Best Photos") {
-                        showingPhotoClustering = true
+                    Button("Filter & Sort Photos") {
+                        showingFilterPhotos = true
                     }
                     .disabled(viewModel.photos.isEmpty)
                 } header: {
@@ -447,6 +448,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingPhotoClustering) {
                 PhotoClusteringView(photoViewModel: viewModel)
+            }
+            .fullScreenCover(isPresented: $showingFilterPhotos) {
+                FilterPhotosView(photoViewModel: viewModel)
             }
         }
     }
@@ -611,6 +615,53 @@ struct GlassHeartButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "heart.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 60, height: 60)
+                .background(
+                    ZStack {
+                        // Main colored background with glass effect
+                        Circle()
+                            .fill(.thinMaterial)
+                            .background(
+                                Circle()
+                                    .fill(Color.accentColor)
+                            )
+                        
+                        // Glass overlay effect
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        .white.opacity(0.3),
+                                        .white.opacity(0.1),
+                                        .clear,
+                                        .black.opacity(0.1)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                        
+                        // Subtle border
+                        Circle()
+                            .stroke(.white.opacity(0.3), lineWidth: 1)
+                    }
+                )
+                .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 6)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .scaleEffect(1.0)
+        .animation(.easeInOut(duration: 0.1), value: false)
+    }
+}
+
+struct GlassFilterButton: View {
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "line.3.horizontal.decrease.circle.fill")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 60, height: 60)

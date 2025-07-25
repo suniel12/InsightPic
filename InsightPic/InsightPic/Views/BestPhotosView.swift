@@ -45,13 +45,6 @@ struct CuratedBestPhotosView: View {
                     
                     Spacer()
                     
-                    Text("Best Photos")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.primary)
-                    
-                    Spacer()
-                    
                     // Glass Refresh button (when results exist)
                     if hasEverAnalyzed && !clusteringViewModel.clusters.isEmpty && !clusteringViewModel.isClustering {
                         GlassRefreshButton(action: {
@@ -59,10 +52,6 @@ struct CuratedBestPhotosView: View {
                                 await clusteringViewModel.clusterPhotos(photoViewModel.photos, saveResults: true)
                             }
                         })
-                    } else {
-                        // Placeholder to maintain spacing
-                        Color.clear
-                            .frame(width: 44, height: 44)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -84,21 +73,36 @@ struct CuratedBestPhotosView: View {
     }
     
     private func checkForExistingResults() async {
-        // Check if we have any existing cluster results
-        do {
-            let existingClusters = try await clusteringViewModel.loadExistingClusters()
-            await MainActor.run {
-                hasEverAnalyzed = !existingClusters.isEmpty
-                if hasEverAnalyzed {
-                    clusteringViewModel.clusters = existingClusters
-                    clusteringViewModel.statistics = ClusteringStatistics(clusters: existingClusters)
+        // Quick check using UserDefaults cache first
+        let cachedHasAnalyzed = UserDefaults.standard.bool(forKey: "hasEverAnalyzedPhotos")
+        
+        await MainActor.run {
+            hasEverAnalyzed = cachedHasAnalyzed
+            isCheckingForExistingResults = false
+        }
+        
+        // If we have cached results, load clusters in background
+        if cachedHasAnalyzed {
+            Task.detached { [weak clusteringViewModel] in
+                do {
+                    let existingClusters = try await clusteringViewModel?.loadExistingClusters() ?? []
+                    await MainActor.run {
+                        clusteringViewModel?.clusters = existingClusters
+                        // Calculate statistics off main thread
+                        Task.detached {
+                            let stats = ClusteringStatistics(clusters: existingClusters)
+                            await MainActor.run {
+                                clusteringViewModel?.statistics = stats
+                            }
+                        }
+                    }
+                } catch {
+                    // If loading fails, update cache
+                    await MainActor.run {
+                        UserDefaults.standard.set(false, forKey: "hasEverAnalyzedPhotos")
+                        self.hasEverAnalyzed = false
+                    }
                 }
-                isCheckingForExistingResults = false
-            }
-        } catch {
-            await MainActor.run {
-                hasEverAnalyzed = false
-                isCheckingForExistingResults = false
             }
         }
     }
@@ -262,20 +266,6 @@ struct BestPhotosResultsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 32) {
-                // Header stats
-                if let stats = clusteringViewModel.statistics {
-                    VStack(spacing: 8) {
-                        Text("Found \(clusteringViewModel.getRecommendedPhotos(count: 20).count) best photos")
-                            .font(.title3)
-                            .fontWeight(.semibold)
-                        
-                        Text("From \(stats.totalPhotos) photos in \(stats.totalClusters) groups")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 8)
-                }
-                
                 // Best photos grid
                 let recommendedPhotos = clusteringViewModel.getRecommendedPhotos(count: 20)
                 
