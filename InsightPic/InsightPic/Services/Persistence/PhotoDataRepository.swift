@@ -1,5 +1,6 @@
 import Foundation
 import CoreData
+import UIKit
 
 // MARK: - Repository Protocol
 
@@ -23,6 +24,11 @@ protocol PhotoDataRepositoryProtocol {
     func cleanup() async throws
     func resetDatabase() async throws
     func loadPhotosWithoutScores() async throws -> [Photo]
+    
+    // Perfect Moment specific methods
+    func savePerfectMoment(_ photo: Photo, image: UIImage) async throws
+    func loadPerfectMoments() async throws -> [Photo]
+    func deletePerfectMoment(_ photo: Photo) async throws
 }
 
 // MARK: - PhotoDataRepository Implementation
@@ -321,5 +327,35 @@ class PhotoDataRepository: PhotoDataRepositoryProtocol {
             
             try context.save()
         }
+    }
+    
+    // MARK: - Perfect Moment Operations
+    
+    func savePerfectMoment(_ photo: Photo, image: UIImage) async throws {
+        // First save the photo with Perfect Moment metadata
+        try await savePhoto(photo)
+        
+        // In a real implementation, you would also save the generated image
+        // For now, we'll just ensure the metadata is persisted
+        print("Perfect Moment photo saved with metadata: \(photo.perfectMomentMetadata != nil)")
+    }
+    
+    func loadPerfectMoments() async throws -> [Photo] {
+        return try await coreDataStack.performBackgroundTask { context in
+            let fetchRequest: NSFetchRequest<PhotoEntity> = PhotoEntity.fetchRequest()
+            // Note: In a real implementation, you'd add a perfectMomentMetadata field to PhotoEntity
+            // For now, we'll return photos that have the isPerfectMoment flag
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \PhotoEntity.timestamp, ascending: false)]
+            
+            let photoEntities = try context.fetch(fetchRequest)
+            let photos = photoEntities.map { $0.convertToPhoto() }
+            
+            // Filter for Perfect Moment photos in memory for now
+            return photos.filter { $0.isPerfectMoment }
+        }
+    }
+    
+    func deletePerfectMoment(_ photo: Photo) async throws {
+        try await deletePhoto(photo)
     }
 }

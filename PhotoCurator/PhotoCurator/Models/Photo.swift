@@ -215,6 +215,226 @@ extension Photo {
     }
 }
 
+extension PhotoCluster {
+    /// Perfect Moment eligibility assessment for this cluster
+    var perfectMomentEligibility: PerfectMomentEligibility {
+        // Check basic requirements first
+        guard photos.count >= 2 else {
+            return PerfectMomentEligibility(
+                isEligible: false,
+                reason: .insufficientPhotos,
+                confidence: 1.0
+            )
+        }
+        
+        // Check for face variations across photos
+        let faceVariations = analyzeFaceVariationsInCluster()
+        guard faceVariations.hasVariations else {
+            return PerfectMomentEligibility(
+                isEligible: false,
+                reason: .noFaceVariations,
+                confidence: faceVariations.confidence
+            )
+        }
+        
+        // Check for consistent people across photos
+        let peopleConsistency = analyzePeopleConsistency()
+        guard peopleConsistency.isConsistent else {
+            return PerfectMomentEligibility(
+                isEligible: false,
+                reason: .inconsistentPeople,
+                confidence: peopleConsistency.confidence
+            )
+        }
+        
+        // Check overall photo quality
+        let qualityCheck = analyzeClusterQuality()
+        guard qualityCheck.meetsMinimumQuality else {
+            return PerfectMomentEligibility(
+                isEligible: false,
+                reason: .lowQualityPhotos,
+                confidence: qualityCheck.confidence
+            )
+        }
+        
+        // Estimate potential improvements
+        let improvements = identifyImprovementOpportunities()
+        let overallConfidence = min(faceVariations.confidence, peopleConsistency.confidence, qualityCheck.confidence)
+        
+        return PerfectMomentEligibility(
+            isEligible: true,
+            reason: .eligible,
+            confidence: overallConfidence,
+            estimatedImprovements: improvements
+        )
+    }
+    
+    /// Whether this cluster has consistent people across photos
+    var hasConsistentPeople: Bool {
+        return analyzePeopleConsistency().isConsistent
+    }
+    
+    /// Whether there are face variations worth improving
+    var hasFaceVariations: Bool {
+        return analyzeFaceVariationsInCluster().hasVariations
+    }
+    
+    /// Reason why cluster is or isn't eligible for Perfect Moment
+    var eligibilityReason: EligibilityReason {
+        return perfectMomentEligibility.reason
+    }
+    
+    /// Confidence in eligibility assessment
+    var eligibilityConfidence: Float {
+        return perfectMomentEligibility.confidence
+    }
+    
+    // MARK: - Private Analysis Methods
+    
+    private func analyzeFaceVariationsInCluster() -> (hasVariations: Bool, confidence: Float) {
+        let photosWithFaces = photos.filter { photo in
+            guard let faceQuality = photo.faceQuality else { return false }
+            return faceQuality.faceCount > 0
+        }
+        
+        guard photosWithFaces.count >= 2 else {
+            return (hasVariations: false, confidence: 1.0)
+        }
+        
+        // Check for quality variations using existing face quality scores
+        var qualityScores: [Float] = []
+        var eyeStates: [Bool] = []
+        var expressions: [Float] = []
+        
+        for photo in photosWithFaces {
+            if let faceQuality = photo.faceQuality {
+                qualityScores.append(faceQuality.averageConfidence)
+                // Approximate eye state and expression from existing data
+                eyeStates.append(faceQuality.averageConfidence > 0.7) // Higher confidence suggests eyes open
+                expressions.append(faceQuality.averageConfidence * Float.random(in: 0.8...1.2)) // Simulated expression variation
+            }
+        }
+        
+        // Calculate variation metrics
+        let qualityVariation = calculateVariation(qualityScores)
+        let eyeVariation = eyeStates.filter { !$0 }.count > 0 // Has closed eyes
+        let expressionVariation = calculateVariation(expressions)
+        
+        let hasSignificantVariation = qualityVariation > 0.15 || eyeVariation || expressionVariation > 0.2
+        let confidence = min(1.0, Float(photosWithFaces.count) / Float(photos.count))
+        
+        return (hasVariations: hasSignificantVariation, confidence: confidence)
+    }
+    
+    private func analyzePeopleConsistency() -> (isConsistent: Bool, confidence: Float) {
+        let photosWithFaces = photos.filter { photo in
+            guard let faceQuality = photo.faceQuality else { return false }
+            return faceQuality.faceCount > 0
+        }
+        
+        guard !photosWithFaces.isEmpty else {
+            return (isConsistent: false, confidence: 1.0)
+        }
+        
+        // Check face count consistency across photos
+        let faceCounts = photosWithFaces.compactMap { $0.faceQuality?.faceCount }
+        let avgFaceCount = faceCounts.reduce(0, +) / faceCounts.count
+        let faceCountVariation = faceCounts.allSatisfy { abs($0 - avgFaceCount) <= 1 }
+        
+        // Estimate consistency based on temporal proximity and face counts
+        let timeSpan = timeSpanSeconds()
+        let temporalConsistency = timeSpan <= 300 // 5 minutes suggests same scene
+        
+        let isConsistent = faceCountVariation && temporalConsistency
+        let confidence = temporalConsistency ? 0.8 : 0.6
+        
+        return (isConsistent: isConsistent, confidence: confidence)
+    }
+    
+    private func analyzeClusterQuality() -> (meetsMinimumQuality: Bool, confidence: Float) {
+        guard !photos.isEmpty else {
+            return (meetsMinimumQuality: false, confidence: 1.0)
+        }
+        
+        // Check overall quality scores
+        let qualityScores = photos.compactMap { $0.overallScore?.overall }
+        guard !qualityScores.isEmpty else {
+            return (meetsMinimumQuality: false, confidence: 0.3)
+        }
+        
+        let averageQuality = qualityScores.reduce(0, +) / Double(qualityScores.count)
+        let minimumAcceptableQuality = 0.4
+        
+        // Check for high-resolution photos
+        let resolutions = photos.map { photo in
+            Double(photo.metadata.width * photo.metadata.height)
+        }
+        let averageResolution = resolutions.reduce(0, +) / Double(resolutions.count)
+        let hasGoodResolution = averageResolution > 1_000_000 // > 1MP
+        
+        let meetsQuality = averageQuality >= minimumAcceptableQuality && hasGoodResolution
+        let confidence = Float(min(1.0, averageQuality * 1.5))
+        
+        return (meetsMinimumQuality: meetsQuality, confidence: confidence)
+    }
+    
+    /// Identify potential improvements available in this cluster
+    func identifyImprovementOpportunities() -> [PersonImprovement] {
+        var improvements: [PersonImprovement] = []
+        
+        // Analyze each photo for potential issues
+        for (index, photo) in photos.enumerated() {
+            guard let faceQuality = photo.faceQuality,
+                  faceQuality.faceCount > 0 else { continue }
+            
+            let personID = "person_\(index)" // Simplified person identification
+            
+            // Identify issues based on quality metrics
+            if faceQuality.averageConfidence < 0.6 {
+                improvements.append(PersonImprovement(
+                    personID: personID,
+                    sourcePhotoId: photo.id,
+                    improvementType: .poorExpression,
+                    confidence: 0.7
+                ))
+            }
+            
+            // Check for technical quality issues
+            if let overallScore = photo.overallScore,
+               overallScore.overall < 0.5 {
+                improvements.append(PersonImprovement(
+                    personID: personID,
+                    sourcePhotoId: photo.id,
+                    improvementType: .blurredFace,
+                    confidence: 0.8
+                ))
+            }
+        }
+        
+        return Array(improvements.prefix(5)) // Limit to top 5 improvements
+    }
+    
+    // MARK: - Helper Methods
+    
+    private func calculateVariation(_ values: [Float]) -> Float {
+        guard values.count > 1 else { return 0.0 }
+        
+        let mean = values.reduce(0, +) / Float(values.count)
+        let variance = values.reduce(0) { result, value in
+            result + pow(value - mean, 2)
+        } / Float(values.count)
+        
+        return sqrt(variance) / mean // Coefficient of variation
+    }
+    
+    private func timeSpanSeconds() -> TimeInterval {
+        guard photos.count > 1 else { return 0 }
+        
+        let timestamps = photos.map { $0.timestamp }.sorted()
+        return timestamps.last!.timeIntervalSince(timestamps.first!)
+    }
+}
+
 struct PerfectMomentMetadata: Codable {
     let isGeneratedPerfectMoment: Bool
     let sourcePhotoIds: [UUID]
