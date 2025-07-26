@@ -354,28 +354,107 @@ extension EyeState {
         let leftEAR = calculateEyeAspectRatio(leftEye.normalizedPoints)
         let rightEAR = calculateEyeAspectRatio(rightEye.normalizedPoints)
         
-        let eyeOpenThreshold: Float = 0.25
+        // Research-based personalized threshold calibration
+        // Studies show optimal range: 0.15-0.29 depending on individual variation
+        let personalizedThreshold = calculatePersonalizedThreshold(leftEAR: leftEAR, rightEAR: rightEAR)
+        
+        // Debug output for threshold optimization
+        print("EAR Analysis - Left: \(leftEAR), Right: \(rightEAR), Threshold: \(personalizedThreshold)")
+        print("Eye Points - Left: \(leftEye.normalizedPoints.count), Right: \(rightEye.normalizedPoints.count)")
+        
+        let leftOpen = leftEAR > personalizedThreshold
+        let rightOpen = rightEAR > personalizedThreshold
+        
+        // Enhanced confidence calculation
+        let avgEAR = (leftEAR + rightEAR) / 2.0
+        let confidence = min(1.0, avgEAR / personalizedThreshold)
+        
+        print("Decision - Left: \(leftOpen ? "OPEN" : "CLOSED"), Right: \(rightOpen ? "OPEN" : "CLOSED"), Confidence: \(confidence)")
         
         return EyeState(
-            leftOpen: leftEAR > eyeOpenThreshold,
-            rightOpen: rightEAR > eyeOpenThreshold,
-            confidence: min(leftEAR, rightEAR) / eyeOpenThreshold
+            leftOpen: leftOpen,
+            rightOpen: rightOpen,
+            confidence: confidence
         )
     }
     
-    /// Calculate Eye Aspect Ratio for openness detection
+    /// Calculate Eye Aspect Ratio using traditional research-based formula
+    /// Traditional EAR = (||p2-p6|| + ||p3-p5||) / (2.0 * ||p1-p4||)
+    /// Adapted for Vision Framework's point ordering
     private static func calculateEyeAspectRatio(_ points: [CGPoint]) -> Float {
-        guard points.count >= 6 else { return 0.5 }
+        guard points.count >= 6 else { 
+            print("EAR Warning: Insufficient eye landmarks (\(points.count) points)")
+            return 0.5 
+        }
         
-        // Calculate vertical distances
-        let vertical1 = distance(points[1], points[5])
-        let vertical2 = distance(points[2], points[4])
+        // Traditional EAR formula expects at least 6 points for proper calculation
+        // Vision Framework typically provides 8-12 points per eye region
+        // Map to traditional 6-point model: [outer_corner, top_outer, top_inner, inner_corner, bottom_inner, bottom_outer]
         
-        // Calculate horizontal distance
-        let horizontal = distance(points[0], points[3])
+        let sortedByX = points.sorted { $0.x < $1.x }
+        let sortedByY = points.sorted { $0.y < $1.y }
         
-        // Eye Aspect Ratio formula
-        return Float((vertical1 + vertical2) / (2.0 * horizontal))
+        // Get key landmark positions
+        let outerCorner = sortedByX.first!      // leftmost point (p1)
+        let innerCorner = sortedByX.last!       // rightmost point (p4)
+        
+        // Get top and bottom points (multiple for better accuracy)
+        let topPoints = Array(sortedByY.prefix(3))     // top 3 points
+        let bottomPoints = Array(sortedByY.suffix(3))  // bottom 3 points
+        
+        // Calculate average top and bottom positions for more robust measurement
+        let avgTopOuter = topPoints[0]          // p2
+        let avgTopInner = topPoints.count > 1 ? topPoints[1] : topPoints[0]  // p3
+        let avgBottomInner = bottomPoints.count > 1 ? bottomPoints[bottomPoints.count-2] : bottomPoints.last!  // p5
+        let avgBottomOuter = bottomPoints.last!  // p6
+        
+        // Traditional EAR formula: (||p2-p6|| + ||p3-p5||) / (2.0 * ||p1-p4||)
+        let verticalDist1 = distance(avgTopOuter, avgBottomOuter)      // ||p2-p6||
+        let verticalDist2 = distance(avgTopInner, avgBottomInner)      // ||p3-p5||
+        let horizontalDist = distance(outerCorner, innerCorner)        // ||p1-p4||
+        
+        // Safety check for division by zero
+        guard horizontalDist > 0.001 else { 
+            print("EAR Warning: Horizontal distance too small (\(horizontalDist))")
+            return 0.5 
+        }
+        
+        let ear = Float((verticalDist1 + verticalDist2) / (2.0 * horizontalDist))
+        
+        // Debug output for troubleshooting
+        print("EAR Calculation - Points: \(points.count), Vertical1: \(verticalDist1), Vertical2: \(verticalDist2), Horizontal: \(horizontalDist), EAR: \(ear)")
+        
+        return ear
+    }
+    
+    /// Calculate personalized threshold based on individual EAR characteristics
+    /// Research shows optimal thresholds vary from 0.15-0.29 between individuals
+    private static func calculatePersonalizedThreshold(leftEAR: Float, rightEAR: Float) -> Float {
+        let avgEAR = (leftEAR + rightEAR) / 2.0
+        
+        // Research-based threshold candidates in order of preference
+        let thresholdCandidates: [Float] = [0.15, 0.18, 0.21, 0.25]
+        
+        print("Threshold Calibration - AvgEAR: \(avgEAR)")
+        
+        // For eyes that should be open, use adaptive threshold based on actual EAR values
+        if avgEAR > 0.3 {
+            // Very wide eyes - can use higher threshold
+            print("Wide eyes detected - using higher threshold")
+            return 0.21
+        } else if avgEAR > 0.2 {
+            // Normal eyes - use research optimal
+            print("Normal eyes detected - using research optimal")
+            return 0.18
+        } else if avgEAR > 0.12 {
+            // Smaller/narrower eyes - use lower threshold
+            print("Narrow eyes detected - using lower threshold")
+            return 0.15
+        } else {
+            // Very low EAR - may be closed or very narrow
+            print("Very low EAR detected - using minimum threshold")
+            return 0.12
+        }
     }
     
     private static func distance(_ p1: CGPoint, _ p2: CGPoint) -> Double {

@@ -10,6 +10,8 @@ struct ClusterPhotosView: View {
     @State private var isCheckingForExistingResults = true
     @State private var clusterRepresentatives: [ClusterRepresentative] = []
     @State private var selectedCluster: PhotoCluster?
+    @State private var showingFaceAnalysisDebug = false
+    @State private var debugCluster: PhotoCluster?
     
     private let columns = [
         GridItem(.adaptive(minimum: 120, maximum: 150), spacing: 2),
@@ -43,6 +45,10 @@ struct ClusterPhotosView: View {
                     columns: columns,
                     onClusterTap: { cluster in
                         selectedCluster = cluster
+                    },
+                    onDebugTap: { cluster in
+                        debugCluster = cluster
+                        showingFaceAnalysisDebug = true
                     }
                 )
             }
@@ -102,6 +108,11 @@ struct ClusterPhotosView: View {
         }
         .fullScreenCover(item: $selectedCluster) { cluster in
             ClusterMomentsDetailView(cluster: cluster, photoViewModel: photoViewModel, curationService: curationService)
+        }
+        .sheet(isPresented: $showingFaceAnalysisDebug) {
+            if let cluster = debugCluster {
+                FaceAnalysisDebugView(cluster: cluster, photoViewModel: photoViewModel)
+            }
         }
     }
     
@@ -273,6 +284,7 @@ struct ClusterPhotosResultsView: View {
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     let columns: [GridItem]
     let onClusterTap: (PhotoCluster) -> Void
+    let onDebugTap: ((PhotoCluster) -> Void)?
     
     var body: some View {
         VStack(spacing: 0) {
@@ -320,7 +332,8 @@ struct ClusterPhotosResultsView: View {
                             ClusterThumbnailView(
                                 representative: representative,
                                 photoViewModel: photoViewModel,
-                                onTap: { onClusterTap(representative.cluster) }
+                                onTap: { onClusterTap(representative.cluster) },
+                                onDebugTap: onDebugTap != nil ? { onDebugTap!(representative.cluster) } : nil
                             )
                         }
                     }
@@ -337,6 +350,7 @@ struct ClusterThumbnailView: View {
     let representative: ClusterRepresentative
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     let onTap: () -> Void
+    let onDebugTap: (() -> Void)?
     
     @State private var thumbnailImage: UIImage?
     @State private var isLoading = true
@@ -372,6 +386,19 @@ struct ClusterThumbnailView: View {
             // Clean cluster info badge (no scores)
             VStack {
                 HStack {
+                    // Debug button (if callback provided)
+                    if let onDebugTap = onDebugTap {
+                        Button(action: onDebugTap) {
+                            Image(systemName: "face.dashed")
+                                .font(.system(size: 10))
+                                .foregroundColor(.blue)
+                                .padding(3)
+                                .background(.black.opacity(0.7))
+                                .cornerRadius(3)
+                        }
+                        .padding(4)
+                    }
+                    
                     Spacer()
                     
                     // Cluster size badge

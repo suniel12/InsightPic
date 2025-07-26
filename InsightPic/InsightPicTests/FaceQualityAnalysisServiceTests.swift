@@ -1,6 +1,8 @@
 import XCTest
 import Vision
 import UIKit
+import Photos
+import CoreLocation
 @testable import InsightPic
 
 /// Comprehensive unit tests for eye state detection algorithm (Task 2.1)
@@ -317,23 +319,499 @@ class FaceQualityAnalysisServiceTests: XCTestCase {
             CGPoint(x: 0.1, y: 0.6)    // lower-outer
         ]
     }
+    
+    // MARK: - Smile Detection and Quality Scoring Tests (Task 2.2)
+    
+    func testSmileDetection_NaturalSmile() async throws {
+        let smileQuality = createMockSmileQuality(intensity: 0.8, naturalness: 0.9, confidence: 0.8)
+        
+        XCTAssertTrue(smileQuality.isGoodSmile, "Natural smile should be detected as good")
+        XCTAssertGreaterThan(smileQuality.overallQuality, 0.6, "Natural smile should have high overall quality")
+        XCTAssertGreaterThan(smileQuality.intensity, 0.7, "Natural smile should have good intensity")
+        XCTAssertGreaterThan(smileQuality.naturalness, 0.8, "Natural smile should have high naturalness")
+    }
+    
+    func testSmileDetection_ForcedSmile() async throws {
+        let forcedSmileQuality = createMockSmileQuality(intensity: 0.9, naturalness: 0.3, confidence: 0.7)
+        
+        XCTAssertFalse(forcedSmileQuality.isGoodSmile, "Forced smile should not be detected as good")
+        XCTAssertLessThan(forcedSmileQuality.naturalness, 0.5, "Forced smile should have low naturalness")
+        XCTAssertGreaterThan(forcedSmileQuality.intensity, 0.8, "Forced smile can still have high intensity")
+    }
+    
+    func testSmileDetection_NoSmile() async throws {
+        let noSmileQuality = createMockSmileQuality(intensity: 0.1, naturalness: 0.5, confidence: 0.8)
+        
+        XCTAssertFalse(noSmileQuality.isGoodSmile, "No smile should not be detected as good")
+        XCTAssertLessThan(noSmileQuality.intensity, 0.3, "No smile should have low intensity")
+        XCTAssertLessThan(noSmileQuality.overallQuality, 0.4, "No smile should have low overall quality")
+    }
+    
+    func testSmileDetection_SubtleSmile() async throws {
+        let subtleSmileQuality = createMockSmileQuality(intensity: 0.5, naturalness: 0.8, confidence: 0.7)
+        
+        XCTAssertLessThan(subtleSmileQuality.overallQuality, 0.7, "Subtle smile should have moderate quality")
+        XCTAssertGreaterThan(subtleSmileQuality.naturalness, 0.7, "Subtle smile should still be natural")
+    }
+    
+    func testLipCurvatureCalculation() throws {
+        let smilingLipPoints = createSmilingLipPoints()
+        let neutralLipPoints = createNeutralLipPoints()
+        let frownLipPoints = createFrowningLipPoints()
+        
+        let smileCurvature = calculateMockLipCurvature(smilingLipPoints)
+        let neutralCurvature = calculateMockLipCurvature(neutralLipPoints)
+        let frownCurvature = calculateMockLipCurvature(frownLipPoints)
+        
+        XCTAssertGreaterThan(smileCurvature, neutralCurvature, "Smiling lips should have higher curvature than neutral")
+        XCTAssertGreaterThan(neutralCurvature, frownCurvature, "Neutral lips should have higher curvature than frowning")
+        XCTAssertGreaterThan(smileCurvature, 0.6, "Smile should have significant curvature")
+    }
+    
+    func testLipSymmetryCalculation() throws {
+        let symmetricLipPoints = createSymmetricLipPoints()
+        let asymmetricLipPoints = createAsymmetricLipPoints()
+        
+        let symmetricScore = calculateMockLipSymmetry(symmetricLipPoints)
+        let asymmetricScore = calculateMockLipSymmetry(asymmetricLipPoints)
+        
+        XCTAssertGreaterThan(symmetricScore, asymmetricScore, "Symmetric lips should score higher than asymmetric")
+        XCTAssertGreaterThan(symmetricScore, 0.8, "Symmetric lips should have high symmetry score")
+        XCTAssertLessThan(asymmetricScore, 0.6, "Asymmetric lips should have lower symmetry score")
+    }
+    
+    // MARK: - Person Matching Tests (Task 2.3)
+    
+    func testPersonMatching_SamePerson() async throws {
+        let person1Face1 = createMockFaceQualityData(personFeatures: .person1, photoId: "photo1")
+        let person1Face2 = createMockFaceQualityData(personFeatures: .person1, photoId: "photo2")
+        
+        // Mock the matching logic
+        let similarity = calculatePersonSimilarity(person1Face1, person1Face2)
+        
+        XCTAssertGreaterThan(similarity, 0.7, "Same person should have high similarity")
+    }
+    
+    func testPersonMatching_DifferentPeople() async throws {
+        let person1Face = createMockFaceQualityData(personFeatures: .person1, photoId: "photo1")
+        let person2Face = createMockFaceQualityData(personFeatures: .person2, photoId: "photo2")
+        
+        let similarity = calculatePersonSimilarity(person1Face, person2Face)
+        
+        XCTAssertLessThan(similarity, 0.5, "Different people should have low similarity")
+    }
+    
+    func testPersonMatching_SimilarPose() async throws {
+        let frontFacingFace1 = createMockFaceQualityData(personFeatures: .person1, photoId: "photo1", angle: FaceAngle.frontal)
+        let frontFacingFace2 = createMockFaceQualityData(personFeatures: .person1, photoId: "photo2", angle: FaceAngle.frontal)
+        
+        let poseSimilarity = calculatePoseSimilarity(frontFacingFace1.faceAngle, frontFacingFace2.faceAngle)
+        
+        XCTAssertGreaterThan(poseSimilarity, 0.9, "Similar poses should have high similarity")
+    }
+    
+    func testPersonMatching_DifferentPoses() async throws {
+        let frontFace = FaceAngle(pitch: 0, yaw: 0, roll: 0)
+        let sideFace = FaceAngle(pitch: 0, yaw: 45, roll: 0)
+        
+        let poseSimilarity = calculatePoseSimilarity(frontFace, sideFace)
+        
+        XCTAssertLessThan(poseSimilarity, 0.7, "Different poses should have lower similarity")
+    }
+    
+    func testPersonMatching_ConsistencyValidation() async throws {
+        let face1 = createMockFaceQualityData(personFeatures: .person1, photoId: "photo1")
+        let face2 = createMockFaceQualityData(personFeatures: .person1, photoId: "photo2")
+        
+        // Test position consistency (faces should be in similar positions)
+        let positionConsistent = validateMockPositionConsistency(face1, face2)
+        XCTAssertTrue(positionConsistent, "Same person faces should have consistent positions")
+        
+        // Test temporal consistency (photos taken close in time)
+        let temporalConsistent = validateMockTemporalConsistency(face1, face2, timeDifference: 60) // 1 minute
+        XCTAssertTrue(temporalConsistent, "Photos taken close in time should be temporally consistent")
+    }
+    
+    // MARK: - Comprehensive Face Analysis Pipeline Tests (Task 2.4)
+    
+    func testComprehensivePipelineAnalysis() async throws {
+        let mockCluster = createMockPhotoCluster(photoCount: 4, peopleCount: 2)
+        
+        let analysis = await service.analyzeFaceQualityInCluster(mockCluster)
+        
+        XCTAssertEqual(analysis.clusterID, mockCluster.id, "Analysis should have correct cluster ID")
+        XCTAssertGreaterThan(analysis.personCount, 0, "Should detect people in cluster")
+        XCTAssertGreaterThanOrEqual(analysis.overallImprovementPotential, 0.0, "Improvement potential should be non-negative")
+        XCTAssertLessThanOrEqual(analysis.overallImprovementPotential, 1.0, "Improvement potential should not exceed 1.0")
+    }
+    
+    func testBatchProcessingPerformance() async throws {
+        let mockCluster = createMockPhotoCluster(photoCount: 8, peopleCount: 3)
+        
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let analysis = await service.analyzeFaceQualityInCluster(mockCluster)
+        let endTime = CFAbsoluteTimeGetCurrent()
+        
+        let processingTime = endTime - startTime
+        
+        XCTAssertLessThan(processingTime, 10.0, "Batch processing should complete within 10 seconds for 8 photos")
+        XCTAssertGreaterThan(analysis.personCount, 0, "Should successfully process all photos")
+    }
+    
+    func testCachingFunctionality() async throws {
+        let mockCluster = createMockPhotoCluster(photoCount: 3, peopleCount: 1)
+        
+        // First analysis (no cache)
+        let startTime1 = CFAbsoluteTimeGetCurrent()
+        let analysis1 = await service.analyzeFaceQualityInCluster(mockCluster)
+        let endTime1 = CFAbsoluteTimeGetCurrent()
+        let time1 = endTime1 - startTime1
+        
+        // Second analysis (should use cache)
+        let startTime2 = CFAbsoluteTimeGetCurrent()
+        let analysis2 = await service.analyzeFaceQualityInCluster(mockCluster)
+        let endTime2 = CFAbsoluteTimeGetCurrent()
+        let time2 = endTime2 - startTime2
+        
+        XCTAssertLessThan(time2, time1, "Cached analysis should be faster than initial analysis")
+        XCTAssertEqual(analysis1.clusterID, analysis2.clusterID, "Cached result should match original")
+        XCTAssertEqual(analysis1.personCount, analysis2.personCount, "Cached result should have same person count")
+    }
+    
+    func testFaceQualityRanking() async throws {
+        let mockPhotos = createMockPhotosWithVariedQuality()
+        
+        let rankings = await service.rankFaceQualityInPhotos(mockPhotos)
+        
+        XCTAssertEqual(rankings.count, mockPhotos.count, "Should rank faces in all photos")
+        
+        for (photoId, faces) in rankings {
+            if faces.count > 1 {
+                // Verify faces are ranked in descending quality order
+                for i in 0..<(faces.count - 1) {
+                    XCTAssertGreaterThanOrEqual(faces[i].qualityRank, faces[i + 1].qualityRank,
+                                              "Faces should be ranked in descending quality order in photo \(photoId)")
+                }
+            }
+        }
+    }
+    
+    func testClusterEligibilityAssessment() async throws {
+        let eligibleCluster = createMockPhotoCluster(photoCount: 4, peopleCount: 2, hasVariations: true)
+        let ineligibleCluster = createMockPhotoCluster(photoCount: 1, peopleCount: 1, hasVariations: false)
+        
+        let eligibleResult = await service.assessClusterEligibility(eligibleCluster)
+        let ineligibleResult = await service.assessClusterEligibility(ineligibleCluster)
+        
+        XCTAssertTrue(eligibleResult.isEligible, "Cluster with variations should be eligible")
+        XCTAssertEqual(eligibleResult.reason, .eligible, "Should have correct eligibility reason")
+        XCTAssertGreaterThan(eligibleResult.estimatedImprovements.count, 0, "Should have improvement estimates")
+        
+        XCTAssertFalse(ineligibleResult.isEligible, "Single photo cluster should not be eligible")
+        XCTAssertEqual(ineligibleResult.reason, .insufficientPhotos, "Should have correct ineligibility reason")
+    }
+    
+    func testCacheManagement() async throws {
+        let cluster1 = createMockPhotoCluster(photoCount: 2, peopleCount: 1)
+        let cluster2 = createMockPhotoCluster(photoCount: 3, peopleCount: 2)
+        
+        // Populate cache
+        _ = await service.analyzeFaceQualityInCluster(cluster1)
+        _ = await service.analyzeFaceQualityInCluster(cluster2)
+        
+        var stats = await service.getCacheStatistics()
+        XCTAssertGreaterThan(stats.clusterCount, 0, "Cache should have cluster entries")
+        
+        // Clear specific cluster
+        await service.clearClusterCache(cluster1.id)
+        stats = await service.getCacheStatistics()
+        
+        // Clear all cache
+        await service.clearAnalysisCache()
+        stats = await service.getCacheStatistics()
+        XCTAssertEqual(stats.clusterCount, 0, "Cache should be empty after clearing")
+        XCTAssertEqual(stats.faceCount, 0, "Face cache should be empty after clearing")
+    }
+    
+    // MARK: - Integration Tests
+    
+    func testEndToEndFaceAnalysisWorkflow() async throws {
+        // Test complete workflow from cluster input to quality analysis output
+        let realWorldCluster = createRealisticMockCluster()
+        
+        let analysis = await service.analyzeFaceQualityInCluster(realWorldCluster)
+        
+        // Verify comprehensive analysis results
+        XCTAssertGreaterThan(analysis.personCount, 0, "Should detect people")
+        XCTAssertNotNil(analysis.basePhotoCandidate, "Should select base photo")
+        XCTAssertGreaterThanOrEqual(analysis.basePhotoCandidate.overallScore, 0.0, "Base photo should have valid score")
+        
+        // Verify person analyses have required data
+        for (_, personAnalysis) in analysis.personAnalyses {
+            XCTAssertGreaterThan(personAnalysis.allFaces.count, 0, "Person should have face data")
+            XCTAssertNotNil(personAnalysis.bestFace, "Person should have best face identified")
+            XCTAssertNotNil(personAnalysis.worstFace, "Person should have worst face identified")
+            XCTAssertGreaterThanOrEqual(personAnalysis.improvementPotential, 0.0, "Improvement potential should be valid")
+        }
+    }
+    
+    // MARK: - Helper Methods for Task 2.2 (Smile Detection)
+    
+    private func createMockSmileQuality(intensity: Float, naturalness: Float, confidence: Float) -> SmileQuality {
+        return SmileQuality(intensity: intensity, naturalness: naturalness, confidence: confidence)
+    }
+    
+    private func calculateMockLipCurvature(_ points: [CGPoint]) -> Float {
+        guard points.count >= 12 else { return 0.0 }
+        
+        let leftCorner = points[0]
+        let rightCorner = points[6]
+        let topCenter = points[3]
+        let bottomCenter = points[9]
+        
+        let mouthCenterY = (topCenter.y + bottomCenter.y) / 2
+        let avgCornerY = (leftCorner.y + rightCorner.y) / 2
+        
+        let curvature = Float(max(0, (avgCornerY - mouthCenterY) * 20))
+        return min(1.0, curvature)
+    }
+    
+    private func calculateMockLipSymmetry(_ points: [CGPoint]) -> Float {
+        guard points.count >= 12 else { return 0.5 }
+        
+        let leftCorner = points[0]
+        let rightCorner = points[6]
+        let center = points[3]
+        
+        let leftDistance = abs(leftCorner.x - center.x)
+        let rightDistance = abs(rightCorner.x - center.x)
+        
+        let symmetry = 1.0 - abs(leftDistance - rightDistance) / max(leftDistance, rightDistance)
+        return Float(max(0.0, min(1.0, symmetry)))
+    }
+    
+    private func createSmilingLipPoints() -> [CGPoint] {
+        return [
+            CGPoint(x: 0.0, y: 0.52),   // left corner (elevated)
+            CGPoint(x: 0.1, y: 0.48),   // left upper
+            CGPoint(x: 0.2, y: 0.47),   // upper left center
+            CGPoint(x: 0.3, y: 0.47),   // top center
+            CGPoint(x: 0.4, y: 0.47),   // upper right center
+            CGPoint(x: 0.5, y: 0.48),   // right upper
+            CGPoint(x: 0.6, y: 0.52),   // right corner (elevated)
+            CGPoint(x: 0.5, y: 0.54),   // right lower
+            CGPoint(x: 0.4, y: 0.55),   // lower right center
+            CGPoint(x: 0.3, y: 0.55),   // bottom center
+            CGPoint(x: 0.2, y: 0.55),   // lower left center
+            CGPoint(x: 0.1, y: 0.54)    // left lower
+        ]
+    }
+    
+    private func createNeutralLipPoints() -> [CGPoint] {
+        return [
+            CGPoint(x: 0.0, y: 0.50),   // left corner (neutral)
+            CGPoint(x: 0.1, y: 0.49),   // left upper
+            CGPoint(x: 0.2, y: 0.48),   // upper left center
+            CGPoint(x: 0.3, y: 0.48),   // top center
+            CGPoint(x: 0.4, y: 0.48),   // upper right center
+            CGPoint(x: 0.5, y: 0.49),   // right upper
+            CGPoint(x: 0.6, y: 0.50),   // right corner (neutral)
+            CGPoint(x: 0.5, y: 0.51),   // right lower
+            CGPoint(x: 0.4, y: 0.52),   // lower right center
+            CGPoint(x: 0.3, y: 0.52),   // bottom center
+            CGPoint(x: 0.2, y: 0.52),   // lower left center
+            CGPoint(x: 0.1, y: 0.51)    // left lower
+        ]
+    }
+    
+    private func createFrowningLipPoints() -> [CGPoint] {
+        return [
+            CGPoint(x: 0.0, y: 0.48),   // left corner (depressed)
+            CGPoint(x: 0.1, y: 0.50),   // left upper
+            CGPoint(x: 0.2, y: 0.51),   // upper left center
+            CGPoint(x: 0.3, y: 0.51),   // top center
+            CGPoint(x: 0.4, y: 0.51),   // upper right center
+            CGPoint(x: 0.5, y: 0.50),   // right upper
+            CGPoint(x: 0.6, y: 0.48),   // right corner (depressed)
+            CGPoint(x: 0.5, y: 0.52),   // right lower
+            CGPoint(x: 0.4, y: 0.53),   // lower right center
+            CGPoint(x: 0.3, y: 0.53),   // bottom center
+            CGPoint(x: 0.2, y: 0.53),   // lower left center
+            CGPoint(x: 0.1, y: 0.52)    // left lower
+        ]
+    }
+    
+    private func createSymmetricLipPoints() -> [CGPoint] {
+        return createNeutralLipPoints() // Neutral lips are symmetric
+    }
+    
+    private func createAsymmetricLipPoints() -> [CGPoint] {
+        return [
+            CGPoint(x: 0.0, y: 0.50),   // left corner
+            CGPoint(x: 0.1, y: 0.49),   // left upper
+            CGPoint(x: 0.2, y: 0.48),   // upper left center
+            CGPoint(x: 0.3, y: 0.48),   // top center
+            CGPoint(x: 0.45, y: 0.485), // upper right center (asymmetric)
+            CGPoint(x: 0.55, y: 0.495), // right upper (asymmetric)
+            CGPoint(x: 0.65, y: 0.505), // right corner (asymmetric)
+            CGPoint(x: 0.55, y: 0.515), // right lower (asymmetric)
+            CGPoint(x: 0.45, y: 0.525), // lower right center (asymmetric)
+            CGPoint(x: 0.3, y: 0.52),   // bottom center
+            CGPoint(x: 0.2, y: 0.52),   // lower left center
+            CGPoint(x: 0.1, y: 0.51)    // left lower
+        ]
+    }
+    
+    // MARK: - Helper Methods for Task 2.3 (Person Matching)
+    
+    private enum PersonFeatures {
+        case person1, person2, person3
+    }
+    
+    private func createMockFaceQualityData(
+        personFeatures: PersonFeatures,
+        photoId: String,
+        angle: FaceAngle = FaceAngle.frontal
+    ) -> FaceQualityData {
+        let mockPhoto = createMockPhoto(id: photoId)
+        let boundingBox = CGRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6)
+        
+        // Create different quality characteristics for different "people"
+        let (captureQuality, eyeState, smileQuality) = getPersonCharacteristics(personFeatures)
+        
+        return FaceQualityData(
+            photo: mockPhoto,
+            boundingBox: boundingBox,
+            landmarks: nil,
+            captureQuality: captureQuality,
+            eyeState: eyeState,
+            smileQuality: smileQuality,
+            faceAngle: angle,
+            sharpness: 0.8,
+            overallScore: 0.7
+        )
+    }
+    
+    private func getPersonCharacteristics(_ person: PersonFeatures) -> (Float, EyeState, SmileQuality) {
+        switch person {
+        case .person1:
+            return (0.8, EyeState.openEyes, SmileQuality.naturalSmile)
+        case .person2:
+            return (0.7, EyeState(leftOpen: true, rightOpen: false, confidence: 0.8), SmileQuality.noSmile)
+        case .person3:
+            return (0.6, EyeState.closedEyes, SmileQuality(intensity: 0.5, naturalness: 0.6, confidence: 0.7))
+        }
+    }
+    
+    private func calculatePersonSimilarity(_ face1: FaceQualityData, _ face2: FaceQualityData) -> Float {
+        // Mock similarity calculation based on characteristics
+        let qualityDiff = abs(face1.captureQuality - face2.captureQuality)
+        let eyeStateSimilarity = (face1.eyeState.bothOpen == face2.eyeState.bothOpen) ? 1.0 : 0.5
+        let smileSimilarity = 1.0 - abs(face1.smileQuality.intensity - face2.smileQuality.intensity)
+        
+        return Float((eyeStateSimilarity + smileSimilarity) / 2.0 - Double(qualityDiff))
+    }
+    
+    private func calculatePoseSimilarity(_ pose1: FaceAngle, _ pose2: FaceAngle) -> Float {
+        let pitchDiff = abs(pose1.pitch - pose2.pitch)
+        let yawDiff = abs(pose1.yaw - pose2.yaw)
+        let rollDiff = abs(pose1.roll - pose2.roll)
+        
+        let pitchSimilarity = max(0.0, 1.0 - (pitchDiff / 90.0))
+        let yawSimilarity = max(0.0, 1.0 - (yawDiff / 90.0))
+        let rollSimilarity = max(0.0, 1.0 - (rollDiff / 180.0))
+        
+        return (pitchSimilarity * 0.3) + (yawSimilarity * 0.5) + (rollSimilarity * 0.2)
+    }
+    
+    private func validateMockPositionConsistency(_ face1: FaceQualityData, _ face2: FaceQualityData) -> Bool {
+        let center1 = CGPoint(x: face1.boundingBox.midX, y: face1.boundingBox.midY)
+        let center2 = CGPoint(x: face2.boundingBox.midX, y: face2.boundingBox.midY)
+        let distance = self.distance(center1, center2)
+        return distance < 0.4 // Within 40% of image
+    }
+    
+    private func validateMockTemporalConsistency(_ face1: FaceQualityData, _ face2: FaceQualityData, timeDifference: TimeInterval) -> Bool {
+        // Mock temporal validation - assume faces within 5 minutes are consistent
+        return timeDifference < 300
+    }
+    
+    // MARK: - Helper Methods for Task 2.4 (Comprehensive Pipeline)
+    
+    private func createMockPhotoCluster(
+        photoCount: Int,
+        peopleCount: Int,
+        hasVariations: Bool = true
+    ) -> PhotoCluster {
+        var photos: [Photo] = []
+        
+        for i in 0..<photoCount {
+            let photo = createMockPhoto(id: "photo_\(i)")
+            photos.append(photo)
+        }
+        
+        var cluster = PhotoCluster()
+        cluster.photos = photos
+        cluster.clusterRepresentativePhoto = photos.first
+        
+        return cluster
+    }
+    
+    private func createMockPhoto(id: String) -> Photo {
+        return Photo(
+            assetIdentifier: id,
+            timestamp: Date(),
+            location: nil,
+            metadata: PhotoMetadata(
+                width: 1920,
+                height: 1080,
+                isUtility: false,
+                customProperties: [:]
+            )
+        )
+    }
+    
+    private func createMockPhotosWithVariedQuality() -> [Photo] {
+        return [
+            createMockPhoto(id: "high_quality"),
+            createMockPhoto(id: "medium_quality"),
+            createMockPhoto(id: "low_quality")
+        ]
+    }
+    
+    private func createRealisticMockCluster() -> PhotoCluster {
+        return createMockPhotoCluster(photoCount: 5, peopleCount: 3, hasVariations: true)
+    }
 }
 
 // MARK: - Mock Photo Library Service
 
 class MockPhotoLibraryService: PhotoLibraryServiceProtocol {
+    func requestAuthorization() async -> PHAuthorizationStatus {
+        return .authorized
+    }
+    
+    func fetchAllPhotos() async throws -> [Photo] {
+        return []
+    }
+    
+    func fetchLimitedPhotos(count: Int, progressCallback: @escaping (Int, Int) -> Void) async throws -> [Photo] {
+        return []
+    }
+    
+    func fetchPhotosInDateRange(from startDate: Date, to endDate: Date) async throws -> [Photo] {
+        return []
+    }
+    
+    func loadImage(for assetIdentifier: String, targetSize: CGSize) async throws -> UIImage? {
+        return UIImage(systemName: "photo")
+    }
+    
+    func getThumbnail(for assetIdentifier: String) async throws -> UIImage? {
+        return UIImage(systemName: "photo")
+    }
+    
     func getFullResolutionImage(for assetIdentifier: String) async throws -> UIImage? {
-        // Return a mock image for testing
         return UIImage(systemName: "photo")
     }
-    
-    func getThumbnailImage(for assetIdentifier: String) async throws -> UIImage? {
-        return UIImage(systemName: "photo")
-    }
-    
-    func requestPhotoLibraryAccess() async -> Bool {
-        return true
-    }
-    
-    // Add other required protocol methods as needed
 }

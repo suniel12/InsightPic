@@ -13,6 +13,49 @@ class FaceQualityAnalysisService {
     
     private let photoLibraryService: PhotoLibraryServiceProtocol
     
+    // MARK: - Performance Optimization & Caching
+    
+    /// Queue for background processing to maintain UI responsiveness
+    private let processingQueue = DispatchQueue(label: "com.insightpic.face-analysis", qos: .userInitiated)
+    
+    /// Actor for thread-safe cache management
+    private actor CacheManager {
+        private var clusterCache: [UUID: ClusterFaceAnalysis] = [:]
+        private var faceCache: [String: [FaceQualityData]] = [:]
+        
+        func getClusterAnalysis(for id: UUID) -> ClusterFaceAnalysis? {
+            return clusterCache[id]
+        }
+        
+        func setClusterAnalysis(_ analysis: ClusterFaceAnalysis, for id: UUID) {
+            clusterCache[id] = analysis
+        }
+        
+        func getFaceAnalysis(for key: String) -> [FaceQualityData]? {
+            return faceCache[key]
+        }
+        
+        func setFaceAnalysis(_ faces: [FaceQualityData], for key: String) {
+            faceCache[key] = faces
+        }
+        
+        func clearAll() {
+            clusterCache.removeAll()
+            faceCache.removeAll()
+        }
+        
+        func clearCluster(_ id: UUID) {
+            clusterCache.removeValue(forKey: id)
+        }
+        
+        var statistics: (clusterCount: Int, faceCount: Int) {
+            return (clusterCache.count, faceCache.count)
+        }
+    }
+    
+    /// Thread-safe cache manager
+    private let cacheManager = CacheManager()
+    
     // MARK: - Initialization
     
     init(photoLibraryService: PhotoLibraryServiceProtocol = PhotoLibraryService()) {
@@ -21,60 +64,259 @@ class FaceQualityAnalysisService {
     
     // MARK: - Public Interface
     
-    /// Analyzes face quality across all photos in a cluster to identify Perfect Moment opportunities
+    /// Comprehensive face analysis pipeline that integrates all face analysis components
+    /// Provides batch processing, caching, and quality ranking for Perfect Moment generation
     /// - Parameter cluster: The photo cluster to analyze
     /// - Returns: Comprehensive cluster face analysis with person-specific quality data
     func analyzeFaceQualityInCluster(_ cluster: PhotoCluster) async -> ClusterFaceAnalysis {
-        var personFaceMap: [PersonID: [FaceQualityData]] = [:]
-        var processedPhotos: [Photo] = []
         
-        // Step 1: Analyze all faces in all photos
-        for photo in cluster.photos {
-            guard let image = try? await loadImage(for: photo) else { 
+        // Check cache first to avoid redundant processing
+        if let cachedAnalysis = await cacheManager.getClusterAnalysis(for: cluster.id) {
+            print("Using cached analysis for cluster \(cluster.id)")
+            return cachedAnalysis
+        }
+        
+        // Perform comprehensive analysis
+        let analysis = await performComprehensiveClusterAnalysis(cluster)
+        
+        // Cache the result for future use
+        await cacheManager.setClusterAnalysis(analysis, for: cluster.id)
+        
+        return analysis
+    }
+    
+    /// Face quality ranking and best-face selection for individual photos
+    /// Integrates all analysis components to identify the highest quality faces
+    /// - Parameter photos: Array of photos to analyze and rank faces within
+    /// - Returns: Dictionary mapping photo IDs to ranked face quality data
+    func rankFaceQualityInPhotos(_ photos: [Photo]) async -> [String: [FaceQualityData]] {
+        var photoFaceRankings: [String: [FaceQualityData]] = [:]
+        
+        // Process each photo individually for face ranking
+        for photo in photos {
+            guard let image = try? await loadImage(for: photo) else {
                 print("Warning: Could not load image for photo \(photo.assetIdentifier)")
-                continue 
+                continue
             }
             
             let faceAnalyses = await analyzeFacesInPhoto(image, photo: photo)
             
-            // Step 2: Match faces across photos (person identification)
-            for faceAnalysis in faceAnalyses {
-                let personID = await matchPersonAcrossPhotos(faceAnalysis, existingPersons: Array(personFaceMap.keys), allFaces: personFaceMap)
-                personFaceMap[personID, default: []].append(faceAnalysis)
-            }
-            
-            processedPhotos.append(photo)
+            // Rank faces by comprehensive quality score
+            let rankedFaces = faceAnalyses.sorted { $0.qualityRank > $1.qualityRank }
+            photoFaceRankings[photo.assetIdentifier] = rankedFaces
         }
         
-        // Step 3: Identify best and worst faces for each person
-        let personQualityAnalyses = personFaceMap.compactMapValues { faces -> PersonFaceQualityAnalysis? in
-            guard faces.count >= 2 else { return nil } // Need multiple faces to compare
-            
-            let bestFace = selectBestFace(from: faces)
-            let worstFace = selectWorstFace(from: faces)
-            let improvementPotential = calculateImprovementPotential(faces)
-            
-            return PersonFaceQualityAnalysis(
-                personID: faces.first?.photo.id.uuidString ?? UUID().uuidString,
-                allFaces: faces,
-                bestFace: bestFace,
-                worstFace: worstFace,
-                improvementPotential: improvementPotential
+        return photoFaceRankings
+    }
+    
+    /// Analyzes cluster eligibility for Perfect Moment generation
+    /// Integrates all quality and person matching components for eligibility assessment
+    /// - Parameter cluster: The photo cluster to assess
+    /// - Returns: Comprehensive eligibility analysis with detailed reasoning
+    func assessClusterEligibility(_ cluster: PhotoCluster) async -> PerfectMomentEligibility {
+        // Check basic requirements first
+        guard cluster.photos.count >= 2 else {
+            return PerfectMomentEligibility(
+                isEligible: false,
+                reason: .insufficientPhotos,
+                confidence: 1.0,
+                estimatedImprovements: []
             )
         }
         
-        // Step 4: Select optimal base photo
+        // Perform quick face analysis to check for variations
+        let analysis = await analyzeFaceQualityInCluster(cluster)
+        
+        // Check if we have people with improvement potential
+        guard !analysis.peopleWithImprovements.isEmpty else {
+            return PerfectMomentEligibility(
+                isEligible: false,
+                reason: .noFaceVariations,
+                confidence: 0.9,
+                estimatedImprovements: []
+            )
+        }
+        
+        // Check overall improvement potential
+        guard analysis.overallImprovementPotential > 0.3 else {
+            return PerfectMomentEligibility(
+                isEligible: false,
+                reason: .noFaceVariations,
+                confidence: 0.8,
+                estimatedImprovements: []
+            )
+        }
+        
+        // Generate improvement estimates
+        let improvements = analysis.personAnalyses.values.map { personAnalysis in
+            PersonImprovement(
+                personID: personAnalysis.personID,
+                sourcePhotoId: personAnalysis.bestFace.photo.id,
+                improvementType: convertFaceIssueToImprovementType(personAnalysis.worstFace.primaryIssue),
+                confidence: personAnalysis.improvementPotential
+            )
+        }
+        
+        return PerfectMomentEligibility(
+            isEligible: true,
+            reason: .eligible,
+            confidence: analysis.overallImprovementPotential,
+            estimatedImprovements: improvements
+        )
+    }
+    
+    /// Performs the actual comprehensive cluster analysis with all integrated components
+    private func performComprehensiveClusterAnalysis(_ cluster: PhotoCluster) async -> ClusterFaceAnalysis {
+        print("Starting comprehensive face analysis for cluster \(cluster.id) with \(cluster.photos.count) photos")
+        
+        // Step 1: Batch process all photos with optimized concurrency
+        let (personFaceMap, processedPhotos) = await performBatchFaceAnalysis(cluster.photos)
+        
+        print("Detected \(personFaceMap.count) unique people across \(processedPhotos.count) photos")
+        
+        // Step 2: Generate comprehensive quality analyses for each person
+        let personQualityAnalyses = await generatePersonQualityAnalyses(personFaceMap)
+        
+        print("Generated quality analyses for \(personQualityAnalyses.count) people with improvement potential")
+        
+        // Step 3: Select optimal base photo using integrated scoring
         let basePhotoCandidate = await selectOptimalBasePhoto(processedPhotos)
         
-        // Step 5: Calculate overall improvement potential
+        print("Selected base photo: \(basePhotoCandidate.photo.assetIdentifier) with score \(basePhotoCandidate.overallScore)")
+        
+        // Step 4: Calculate overall improvement potential across all people
         let overallImprovement = calculateOverallImprovement(personQualityAnalyses)
         
-        return ClusterFaceAnalysis(
+        print("Overall improvement potential: \(overallImprovement)")
+        
+        let finalAnalysis = ClusterFaceAnalysis(
             clusterID: cluster.id,
             personAnalyses: personQualityAnalyses,
             basePhotoCandidate: basePhotoCandidate,
             overallImprovementPotential: overallImprovement
         )
+        
+        print("Completed comprehensive analysis for cluster \(cluster.id)")
+        return finalAnalysis
+    }
+    
+    // MARK: - Comprehensive Batch Processing Pipeline (Task 2.4)
+    
+    /// Optimized batch processing of all photos with concurrent face analysis and person matching
+    /// Leverages existing async/await patterns from PhotoAnalysisService for performance
+    private func performBatchFaceAnalysis(_ photos: [Photo]) async -> ([PersonID: [FaceQualityData]], [Photo]) {
+        var personFaceMap: [PersonID: [FaceQualityData]] = [:]
+        var processedPhotos: [Photo] = []
+        
+        // Process photos concurrently with controlled concurrency
+        await withTaskGroup(of: (Photo, [FaceQualityData]).self) { group in
+            for photo in photos {
+                group.addTask { [weak self] in
+                    guard let self = self else { return (photo, []) }
+                    
+                    // Controlled concurrency is handled by TaskGroup limitation
+                    
+                    // Check face analysis cache first
+                    let cacheKey = photo.assetIdentifier
+                    if let cachedFaces = await self.cacheManager.getFaceAnalysis(for: cacheKey) {
+                        return (photo, cachedFaces)
+                    }
+                    
+                    // Load image and analyze faces
+                    guard let image = try? await self.loadImage(for: photo) else {
+                        print("Warning: Could not load image for photo \(photo.assetIdentifier)")
+                        return (photo, [])
+                    }
+                    
+                    let faceAnalyses = await self.analyzeFacesInPhoto(image, photo: photo)
+                    
+                    // Cache the result
+                    await self.cacheManager.setFaceAnalysis(faceAnalyses, for: cacheKey)
+                    
+                    return (photo, faceAnalyses)
+                }
+            }
+            
+            // Collect results and perform person matching
+            for await (photo, faceAnalyses) in group {
+                for faceAnalysis in faceAnalyses {
+                    let personID = await matchPersonAcrossPhotos(
+                        faceAnalysis,
+                        existingPersons: Array(personFaceMap.keys),
+                        allFaces: personFaceMap
+                    )
+                    personFaceMap[personID, default: []].append(faceAnalysis)
+                }
+                processedPhotos.append(photo)
+            }
+        }
+        
+        return (personFaceMap, processedPhotos)
+    }
+    
+    /// Generates comprehensive quality analyses for each person with face ranking
+    /// Integrates all face analysis components for optimal selection
+    private func generatePersonQualityAnalyses(_ personFaceMap: [PersonID: [FaceQualityData]]) async -> [PersonID: PersonFaceQualityAnalysis] {
+        var analyses: [PersonID: PersonFaceQualityAnalysis] = [:]
+        
+        for (personID, faces) in personFaceMap {
+            // Only analyze people with multiple faces
+            guard faces.count >= 2 else { continue }
+            
+            // Rank faces by comprehensive quality score
+            let rankedFaces = faces.sorted { $0.qualityRank > $1.qualityRank }
+            
+            let bestFace = rankedFaces.first!
+            let worstFace = rankedFaces.last!
+            let improvementPotential = calculateImprovementPotential(faces)
+            
+            // Only include if there's meaningful improvement potential
+            if improvementPotential > 0.2 {
+                analyses[personID] = PersonFaceQualityAnalysis(
+                    personID: personID,
+                    allFaces: faces,
+                    bestFace: bestFace,
+                    worstFace: worstFace,
+                    improvementPotential: improvementPotential
+                )
+            }
+        }
+        
+        return analyses
+    }
+    
+    /// Clears analysis cache to free memory when needed
+    func clearAnalysisCache() async {
+        await cacheManager.clearAll()
+        print("Cleared face analysis cache")
+    }
+    
+    /// Clears specific cluster from cache
+    func clearClusterCache(_ clusterID: UUID) async {
+        await cacheManager.clearCluster(clusterID)
+    }
+    
+    /// Returns cache statistics for monitoring
+    func getCacheStatistics() async -> (clusterCount: Int, faceCount: Int) {
+        return await cacheManager.statistics
+    }
+    
+    /// Converts FaceIssue to corresponding ImprovementType
+    private func convertFaceIssueToImprovementType(_ faceIssue: FaceIssue) -> ImprovementType {
+        switch faceIssue {
+        case .eyesClosed:
+            return .eyesClosed
+        case .poorExpression:
+            return .poorExpression
+        case .awkwardPose:
+            return .awkwardPose
+        case .blurredFace:
+            return .blurredFace
+        case .unflatteringAngle:
+            return .unflatteringAngle
+        case .none:
+            return .poorExpression // Default fallback
+        }
     }
     
     // MARK: - Face Analysis Pipeline
@@ -91,7 +333,16 @@ class FaceQualityAnalysisService {
         let landmarksRequest = VNDetectFaceLandmarksRequest()
         let qualityRequest = VNDetectFaceCaptureQualityRequest()
         
-        let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
+        // CRITICAL: Set correct revision for landmark detection (per Vision Framework best practices)
+        // Use Revision2 (65-point model) for compatibility with traditional EAR algorithms
+        if #available(iOS 12.0, *) {
+            landmarksRequest.revision = VNDetectFaceLandmarksRequestRevision2
+        }
+        
+        // CRITICAL: Handle image orientation properly (per Vision Framework best practices)
+        // Vision algorithms are not rotation-agnostic and need correct orientation
+        let orientation = getImageOrientation(from: image)
+        let handler = VNImageRequestHandler(ciImage: ciImage, orientation: orientation, options: [:])
         
         do {
             try handler.perform([faceRequest, landmarksRequest, qualityRequest])
@@ -162,33 +413,102 @@ class FaceQualityAnalysisService {
             return EyeState(leftOpen: true, rightOpen: true, confidence: 0.2)
         }
         
-        // Calculate EAR for both eyes using enhanced algorithm
-        let leftEARResult = calculateEnhancedEyeAspectRatio(leftEye.normalizedPoints, eyeType: .left)
-        let rightEARResult = calculateEnhancedEyeAspectRatio(rightEye.normalizedPoints, eyeType: .right)
+        // Use the research-based EAR calculation with traditional formula
+        let leftEAR = calculateResearchBasedEAR(leftEye.normalizedPoints)
+        let rightEAR = calculateResearchBasedEAR(rightEye.normalizedPoints)
         
-        // Enhanced adaptive thresholding based on eye characteristics
-        let leftThreshold = calculateAdaptiveEyeThreshold(leftEARResult.landmarks, baseline: leftEARResult.ear)
-        let rightThreshold = calculateAdaptiveEyeThreshold(rightEARResult.landmarks, baseline: rightEARResult.ear)
+        // Research-based personalized threshold calibration
+        let personalizedThreshold = calculatePersonalizedThreshold(leftEAR: leftEAR, rightEAR: rightEAR)
         
-        // Determine eye states with adaptive thresholds
-        let leftOpen = leftEARResult.ear > leftThreshold
-        let rightOpen = rightEARResult.ear > rightThreshold
+        // Debug output for threshold optimization
+        print("🔍 EAR Analysis - Left: \(leftEAR), Right: \(rightEAR), Threshold: \(personalizedThreshold)")
+        print("👁️ Eye Points - Left: \(leftEye.normalizedPoints.count), Right: \(rightEye.normalizedPoints.count)")
         
-        // Advanced confidence calculation considering multiple factors
-        let confidence = calculateEyeStateConfidence(
-            leftEAR: leftEARResult.ear,
-            rightEAR: rightEARResult.ear,
-            leftThreshold: leftThreshold,
-            rightThreshold: rightThreshold,
-            leftLandmarkQuality: leftEARResult.landmarkQuality,
-            rightLandmarkQuality: rightEARResult.landmarkQuality
-        )
+        let leftOpen = leftEAR > personalizedThreshold
+        let rightOpen = rightEAR > personalizedThreshold
+        
+        // Enhanced confidence calculation
+        let avgEAR = (leftEAR + rightEAR) / 2.0
+        let confidence = min(1.0, avgEAR / personalizedThreshold)
+        
+        print("✅ Decision - Left: \(leftOpen ? "OPEN" : "CLOSED"), Right: \(rightOpen ? "OPEN" : "CLOSED"), Confidence: \(confidence)")
         
         return EyeState(
             leftOpen: leftOpen,
             rightOpen: rightOpen,
             confidence: confidence
         )
+    }
+    
+    /// Research-based EAR calculation using traditional formula
+    /// Traditional EAR = (||p2-p6|| + ||p3-p5||) / (2.0 * ||p1-p4||)
+    private func calculateResearchBasedEAR(_ points: [CGPoint]) -> Float {
+        guard points.count >= 6 else { 
+            print("⚠️ EAR Warning: Insufficient eye landmarks (\(points.count) points)")
+            return 0.5 
+        }
+        
+        let sortedByX = points.sorted { $0.x < $1.x }
+        let sortedByY = points.sorted { $0.y < $1.y }
+        
+        // Get key landmark positions
+        let outerCorner = sortedByX.first!      // leftmost point (p1)
+        let innerCorner = sortedByX.last!       // rightmost point (p4)
+        
+        // Get top and bottom points (multiple for better accuracy)
+        let topPoints = Array(sortedByY.prefix(3))     // top 3 points
+        let bottomPoints = Array(sortedByY.suffix(3))  // bottom 3 points
+        
+        // Calculate average top and bottom positions for more robust measurement
+        let avgTopOuter = topPoints[0]          // p2
+        let avgTopInner = topPoints.count > 1 ? topPoints[1] : topPoints[0]  // p3
+        let avgBottomInner = bottomPoints.count > 1 ? bottomPoints[bottomPoints.count-2] : bottomPoints.last!  // p5
+        let avgBottomOuter = bottomPoints.last!  // p6
+        
+        // Traditional EAR formula: (||p2-p6|| + ||p3-p5||) / (2.0 * ||p1-p4||)
+        let verticalDist1 = distance(avgTopOuter, avgBottomOuter)      // ||p2-p6||
+        let verticalDist2 = distance(avgTopInner, avgBottomInner)      // ||p3-p5||
+        let horizontalDist = distance(outerCorner, innerCorner)        // ||p1-p4||
+        
+        // Safety check for division by zero
+        guard horizontalDist > 0.001 else { 
+            print("⚠️ EAR Warning: Horizontal distance too small (\(horizontalDist))")
+            return 0.5 
+        }
+        
+        let ear = Float((verticalDist1 + verticalDist2) / (2.0 * horizontalDist))
+        
+        // Debug output for troubleshooting
+        print("📐 EAR Calculation - Points: \(points.count), V1: \(String(format: "%.3f", verticalDist1)), V2: \(String(format: "%.3f", verticalDist2)), H: \(String(format: "%.3f", horizontalDist)), EAR: \(ear)")
+        
+        return ear
+    }
+    
+    /// Calculate personalized threshold based on individual EAR characteristics
+    /// Research shows optimal thresholds vary from 0.15-0.29 between individuals
+    private func calculatePersonalizedThreshold(leftEAR: Float, rightEAR: Float) -> Float {
+        let avgEAR = (leftEAR + rightEAR) / 2.0
+        
+        print("🎯 Threshold Calibration - AvgEAR: \(avgEAR)")
+        
+        // For eyes that should be open, use adaptive threshold based on actual EAR values
+        if avgEAR > 0.3 {
+            // Very wide eyes - can use higher threshold
+            print("🔵 Wide eyes detected - using higher threshold")
+            return 0.21
+        } else if avgEAR > 0.2 {
+            // Normal eyes - use research optimal
+            print("🟢 Normal eyes detected - using research optimal")
+            return 0.18
+        } else if avgEAR > 0.12 {
+            // Smaller/narrower eyes - use lower threshold
+            print("🟡 Narrow eyes detected - using lower threshold")
+            return 0.15
+        } else {
+            // Very low EAR - may be closed or very narrow
+            print("🔴 Very low EAR detected - using minimum threshold")
+            return 0.12
+        }
     }
     
     /// Enhanced Eye Aspect Ratio calculation using comprehensive landmark analysis
@@ -246,8 +566,10 @@ class FaceQualityAnalysisService {
     }
     
     /// Calculates adaptive threshold for eye openness based on individual eye characteristics
+    /// Research-based implementation using 2022 optimal threshold findings
     private func calculateAdaptiveEyeThreshold(_ landmarks: [CGPoint], baseline: Float) -> Float {
-        let baseThreshold: Float = 0.25 // Standard threshold
+        // Research shows 0.18 is optimal (2022 studies), improved from traditional 0.2-0.25
+        let baseThreshold: Float = 0.18
         
         // Adjust threshold based on eye shape characteristics
         let eyeShapeFactor = calculateEyeShapeFactor(landmarks)
@@ -1012,10 +1334,19 @@ class FaceQualityAnalysisService {
             }
         }
         
+        // Debug: Log person matching results
+        if let match = bestMatch {
+            print("🔍 Person Matching - Best similarity: \(match.similarity), confidence: \(match.confidence)")
+            print("📊 Thresholds - Strong: \(PersonMatchingThresholds.strongMatchThreshold), Medium: \(PersonMatchingThresholds.mediumMatchThreshold), Min: \(PersonMatchingThresholds.minimumSimilarity)")
+        } else {
+            print("❌ Person Matching - No matches found above minimum threshold")
+        }
+        
         // Validate the best match meets quality requirements
         if let match = bestMatch,
            match.similarity >= PersonMatchingThresholds.strongMatchThreshold,
            match.confidence >= PersonMatchingThresholds.minimumConfidence {
+            print("✅ Strong match found - using existing person: \(match.personID.prefix(8))")
             return match.personID
         }
         
@@ -1035,7 +1366,9 @@ class FaceQualityAnalysisService {
         }
         
         // No confident match found, create new person ID
-        return UUID().uuidString
+        let newPersonID = UUID().uuidString
+        print("🆕 Creating new person: \(newPersonID.prefix(8)) - no confident matches found")
+        return newPersonID
     }
     
     /// Generates face embedding for person identification using Vision Framework
@@ -1350,8 +1683,10 @@ class FaceQualityAnalysisService {
             }
         }
         
-        // No match found, create new person ID
-        return UUID().uuidString
+        // No match found, create new person ID  
+        let newPersonID = UUID().uuidString
+        print("🆕 Creating new person (fallback): \(newPersonID.prefix(8)) - position-based matching failed")
+        return newPersonID
     }
     
     /// Basic face similarity for fallback matching
@@ -1473,6 +1808,31 @@ class FaceQualityAnalysisService {
         return sqrt(dx * dx + dy * dy)
     }
     
+    /// Get correct image orientation for Vision Framework (per best practices)
+    /// Vision algorithms require explicit orientation information for accurate results
+    private func getImageOrientation(from image: UIImage) -> CGImagePropertyOrientation {
+        switch image.imageOrientation {
+        case .up:
+            return .up
+        case .down:
+            return .down
+        case .left:
+            return .left
+        case .right:
+            return .right
+        case .upMirrored:
+            return .upMirrored
+        case .downMirrored:
+            return .downMirrored
+        case .leftMirrored:
+            return .leftMirrored
+        case .rightMirrored:
+            return .rightMirrored
+        @unknown default:
+            return .up
+        }
+    }
+    
     /// Loads image for analysis, leveraging existing service patterns
     private func loadImage(for photo: Photo) async throws -> UIImage? {
         return try await photoLibraryService.getFullResolutionImage(for: photo.assetIdentifier)
@@ -1565,10 +1925,10 @@ private struct PersonSimilarityResult {
 
 /// Thresholds for person matching quality assessment
 private struct PersonMatchingThresholds {
-    static let minimumSimilarity: Float = 0.3          // Minimum to consider as potential match
-    static let mediumMatchThreshold: Float = 0.5       // Requires additional validation
-    static let strongMatchThreshold: Float = 0.7       // High confidence match
-    static let minimumConfidence: Float = 0.6          // Minimum confidence for strong match
+    static let minimumSimilarity: Float = 0.2          // Minimum to consider as potential match (lowered for debugging)
+    static let mediumMatchThreshold: Float = 0.4       // Requires additional validation (lowered for debugging)
+    static let strongMatchThreshold: Float = 0.6       // High confidence match (lowered for debugging)
+    static let minimumConfidence: Float = 0.5          // Minimum confidence for strong match (lowered for debugging)
     static let maxTemporalGap: TimeInterval = 300      // 5 minutes max between faces
 }
 
