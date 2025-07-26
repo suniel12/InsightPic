@@ -17,6 +17,9 @@ struct Photo: Identifiable, Codable {
     var overallScore: PhotoScore?
     var clusterId: UUID?
     
+    // Perfect Moment metadata (for generated photos)
+    var perfectMomentMetadata: PerfectMomentMetadata?
+    
     init(id: UUID = UUID(),
          assetIdentifier: String,
          timestamp: Date,
@@ -26,7 +29,8 @@ struct Photo: Identifiable, Codable {
          technicalQuality: TechnicalQualityScore? = nil,
          faceQuality: FaceQualityScore? = nil,
          overallScore: PhotoScore? = nil,
-         clusterId: UUID? = nil) {
+         clusterId: UUID? = nil,
+         perfectMomentMetadata: PerfectMomentMetadata? = nil) {
         self.id = id
         self.assetIdentifier = assetIdentifier
         self.timestamp = timestamp
@@ -37,6 +41,7 @@ struct Photo: Identifiable, Codable {
         self.faceQuality = faceQuality
         self.overallScore = overallScore
         self.clusterId = clusterId
+        self.perfectMomentMetadata = perfectMomentMetadata
     }
     
     // MARK: - Codable Implementation
@@ -44,6 +49,7 @@ struct Photo: Identifiable, Codable {
     enum CodingKeys: String, CodingKey {
         case id, assetIdentifier, timestamp, metadata
         case fingerprint, technicalQuality, faceQuality, overallScore, clusterId
+        case perfectMomentMetadata
         case latitude, longitude
     }
     
@@ -59,6 +65,7 @@ struct Photo: Identifiable, Codable {
         faceQuality = try container.decodeIfPresent(FaceQualityScore.self, forKey: .faceQuality)
         overallScore = try container.decodeIfPresent(PhotoScore.self, forKey: .overallScore)
         clusterId = try container.decodeIfPresent(UUID.self, forKey: .clusterId)
+        perfectMomentMetadata = try container.decodeIfPresent(PerfectMomentMetadata.self, forKey: .perfectMomentMetadata)
         
         // Handle location
         if let latitude = try container.decodeIfPresent(Double.self, forKey: .latitude),
@@ -81,6 +88,7 @@ struct Photo: Identifiable, Codable {
         try container.encodeIfPresent(faceQuality, forKey: .faceQuality)
         try container.encodeIfPresent(overallScore, forKey: .overallScore)
         try container.encodeIfPresent(clusterId, forKey: .clusterId)
+        try container.encodeIfPresent(perfectMomentMetadata, forKey: .perfectMomentMetadata)
         
         // Handle location
         if let location = location {
@@ -195,6 +203,182 @@ enum PhotoType {
             return .portrait
         } else {
             return .landscape
+        }
+    }
+}
+
+// MARK: - Perfect Moment Support
+
+extension Photo {
+    var isPerfectMoment: Bool {
+        return perfectMomentMetadata?.isGeneratedPerfectMoment == true
+    }
+}
+
+struct PerfectMomentMetadata: Codable {
+    let isGeneratedPerfectMoment: Bool
+    let sourcePhotoIds: [UUID]
+    let generationTimestamp: Date
+    let qualityScore: Float
+    let personReplacements: [PersonReplacement]
+    
+    init(isGeneratedPerfectMoment: Bool = true,
+         sourcePhotoIds: [UUID],
+         generationTimestamp: Date = Date(),
+         qualityScore: Float,
+         personReplacements: [PersonReplacement]) {
+        self.isGeneratedPerfectMoment = isGeneratedPerfectMoment
+        self.sourcePhotoIds = sourcePhotoIds
+        self.generationTimestamp = generationTimestamp
+        self.qualityScore = qualityScore
+        self.personReplacements = personReplacements
+    }
+}
+
+struct PersonReplacement: Codable {
+    let personID: String
+    let sourcePhotoId: UUID
+    let improvementType: ImprovementType
+    let confidence: Float
+    
+    init(personID: String,
+         sourcePhotoId: UUID,
+         improvementType: ImprovementType,
+         confidence: Float) {
+        self.personID = personID
+        self.sourcePhotoId = sourcePhotoId
+        self.improvementType = improvementType
+        self.confidence = confidence
+    }
+}
+
+enum ImprovementType: String, Codable, CaseIterable {
+    case eyesClosed = "eyes_closed"
+    case poorExpression = "poor_expression"
+    case awkwardPose = "awkward_pose"
+    case blurredFace = "blurred_face"
+    case unflatteringAngle = "unflattering_angle"
+    
+    var description: String {
+        switch self {
+        case .eyesClosed:
+            return "Fixed closed eyes"
+        case .poorExpression:
+            return "Improved expression"
+        case .awkwardPose:
+            return "Better pose"
+        case .blurredFace:
+            return "Sharper face"
+        case .unflatteringAngle:
+            return "Better angle"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .eyesClosed:
+            return "eye"
+        case .poorExpression:
+            return "face.smiling"
+        case .awkwardPose:
+            return "figure.wave"
+        case .blurredFace:
+            return "camera.filters"
+        case .unflatteringAngle:
+            return "rotate.3d"
+        }
+    }
+}
+
+struct PersonImprovement {
+    let personID: String
+    let sourcePhotoId: UUID
+    let improvementType: ImprovementType
+    let confidence: Float
+    
+    init(personID: String,
+         sourcePhotoId: UUID,
+         improvementType: ImprovementType,
+         confidence: Float) {
+        self.personID = personID
+        self.sourcePhotoId = sourcePhotoId
+        self.improvementType = improvementType
+        self.confidence = confidence
+    }
+    
+    init(from replacement: PersonReplacement) {
+        self.personID = replacement.personID
+        self.sourcePhotoId = replacement.sourcePhotoId
+        self.improvementType = replacement.improvementType
+        self.confidence = replacement.confidence
+    }
+}
+
+enum FaceIssue: String, CaseIterable {
+    case eyesClosed = "eyes_closed"
+    case poorExpression = "poor_expression"
+    case awkwardPose = "awkward_pose"
+    case blurredFace = "blurred_face"
+    case unflatteringAngle = "unflattering_angle"
+    case none = "none"
+    
+    var severity: Float {
+        switch self {
+        case .eyesClosed:
+            return 1.0
+        case .poorExpression:
+            return 0.8
+        case .awkwardPose:
+            return 0.7
+        case .blurredFace:
+            return 0.9
+        case .unflatteringAngle:
+            return 0.6
+        case .none:
+            return 0.0
+        }
+    }
+}
+
+struct PerfectMomentEligibility {
+    let isEligible: Bool
+    let reason: EligibilityReason
+    let confidence: Float
+    let estimatedImprovements: [PersonImprovement]
+    
+    init(isEligible: Bool,
+         reason: EligibilityReason,
+         confidence: Float,
+         estimatedImprovements: [PersonImprovement] = []) {
+        self.isEligible = isEligible
+        self.reason = reason
+        self.confidence = confidence
+        self.estimatedImprovements = estimatedImprovements
+    }
+}
+
+enum EligibilityReason: String, CaseIterable {
+    case eligible = "eligible"
+    case insufficientPhotos = "insufficient_photos"
+    case noFaceVariations = "no_face_variations"
+    case inconsistentPeople = "inconsistent_people"
+    case lowQualityPhotos = "low_quality_photos"
+    case processingError = "processing_error"
+    
+    var userMessage: String {
+        switch self {
+        case .eligible:
+            return "This cluster is eligible for Perfect Moment generation."
+        case .insufficientPhotos:
+            return "Need at least 2 similar photos to create a Perfect Moment."
+        case .noFaceVariations:
+            return "All photos have similar expressions - no improvements possible."
+        case .inconsistentPeople:
+            return "Photos contain different people - cannot create composite."
+        case .lowQualityPhotos:
+            return "Photo quality is too low for reliable face compositing."
+        case .processingError:
+            return "Unable to analyze photos for Perfect Moment generation."
         }
     }
 }
