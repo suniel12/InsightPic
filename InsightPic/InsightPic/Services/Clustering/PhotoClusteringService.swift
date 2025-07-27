@@ -5,6 +5,32 @@ import CoreLocation
 
 // MARK: - Clustering Models
 
+// MARK: - Representative Selection Reason
+
+enum RepresentativeSelectionReason: String, CaseIterable, Codable {
+    case highestOverallQuality = "Highest overall quality"
+    case bestFacialQuality = "Best facial expressions and quality"
+    case balancedQualityAndFaces = "Best balance of technical and facial quality"
+    case onlyOptionAvailable = "Only suitable option available"
+    case fallbackSelection = "Fallback selection"
+    case manualOverride = "Manually selected by user"
+    
+    var description: String {
+        return self.rawValue
+    }
+    
+    var shortDescription: String {
+        switch self {
+        case .highestOverallQuality: return "Best Quality"
+        case .bestFacialQuality: return "Best Faces"
+        case .balancedQualityAndFaces: return "Balanced"
+        case .onlyOptionAvailable: return "Only Option"
+        case .fallbackSelection: return "Fallback"
+        case .manualOverride: return "Manual"
+        }
+    }
+}
+
 struct PhotoSubCluster: Identifiable, Hashable {
     let id = UUID()
     var photos: [Photo] = []
@@ -75,6 +101,9 @@ struct PhotoCluster: Identifiable, Hashable {
     // Enhanced ranking support
     var rankedPhotos: [Photo] = []
     var clusterRepresentativePhoto: Photo?
+    var representativeSelectionReason: RepresentativeSelectionReason?
+    var rankingConfidence: Float = 0.0
+    var lastRankingUpdate: Date?
     var subClusters: [PhotoSubCluster] = []
     var clusterQualityMetrics: ClusterQualityMetrics?
     
@@ -113,6 +142,44 @@ struct PhotoCluster: Identifiable, Hashable {
         return clusterQualityMetrics?.representativenessScore ?? 0.0
     }
     
+    // MARK: - Enhanced Ranking Properties
+    
+    /// Returns the currently selected representative photo with fallback logic
+    var effectiveRepresentativePhoto: Photo? {
+        return clusterRepresentativePhoto ?? bestPhoto ?? photos.first
+    }
+    
+    /// Indicates if the cluster ranking data is stale and needs updating
+    var needsRankingUpdate: Bool {
+        guard let lastUpdate = lastRankingUpdate else { return true }
+        
+        // Rankings are considered stale after 24 hours or if photos have been added
+        let staleThreshold = TimeInterval(24 * 60 * 60) // 24 hours
+        let isStale = Date().timeIntervalSince(lastUpdate) > staleThreshold
+        let photoCountMismatch = rankedPhotos.count != photos.count
+        
+        return isStale || photoCountMismatch
+    }
+    
+    /// Returns a user-friendly explanation of why the current representative was chosen
+    var representativeExplanation: String {
+        guard let reason = representativeSelectionReason else {
+            return "Representative not yet selected"
+        }
+        
+        let confidenceText = rankingConfidence > 0.8 ? "High confidence" :
+                           rankingConfidence > 0.5 ? "Medium confidence" : "Low confidence"
+        
+        return "\(reason.shortDescription) (\(confidenceText))"
+    }
+    
+    /// Indicates if this cluster has high-quality ranking data
+    var hasReliableRanking: Bool {
+        return lastRankingUpdate != nil && 
+               rankingConfidence > 0.5 && 
+               !needsRankingUpdate
+    }
+    
     mutating func add(_ photo: Photo, fingerprint: VNFeaturePrintObservation?) {
         photos.append(photo)
         
@@ -142,6 +209,51 @@ struct PhotoCluster: Identifiable, Hashable {
         let timestamps = photos.map(\.timestamp).sorted()
         guard let first = timestamps.first, let last = timestamps.last else { return }
         timeRange = (start: first, end: last)
+    }
+    
+    // MARK: - Ranking Management Methods
+    
+    /// Updates the cluster ranking metadata with new ranking results
+    mutating func updateRanking(
+        rankedPhotos: [Photo],
+        representativePhoto: Photo,
+        reason: RepresentativeSelectionReason,
+        confidence: Float
+    ) {
+        self.rankedPhotos = rankedPhotos
+        self.clusterRepresentativePhoto = representativePhoto
+        self.representativeSelectionReason = reason
+        self.rankingConfidence = max(0.0, min(1.0, confidence))
+        self.lastRankingUpdate = Date()
+    }
+    
+    /// Manually overrides the representative photo selection
+    mutating func setManualRepresentative(_ photo: Photo) {
+        guard photos.contains(where: { $0.id == photo.id }) else {
+            print("Warning: Cannot set representative photo that is not in cluster")
+            return
+        }
+        
+        self.clusterRepresentativePhoto = photo
+        self.representativeSelectionReason = .manualOverride
+        self.rankingConfidence = 1.0 // High confidence for manual selection
+        self.lastRankingUpdate = Date()
+    }
+    
+    /// Clears ranking data to force re-ranking
+    mutating func clearRanking() {
+        self.rankedPhotos = []
+        self.clusterRepresentativePhoto = nil
+        self.representativeSelectionReason = nil
+        self.rankingConfidence = 0.0
+        self.lastRankingUpdate = nil
+    }
+    
+    /// Returns photos that need quality analysis for ranking
+    var photosNeedingAnalysis: [Photo] {
+        return photos.filter { photo in
+            photo.overallScore == nil || photo.faceQuality == nil
+        }
     }
 }
 
