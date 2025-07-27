@@ -302,6 +302,38 @@ struct PersonFaceReplacement {
     }
 }
 
+// MARK: - Face Replacement Selection Structures
+
+struct ImprovementAssessment {
+    let overallPotential: Float           // How much improvement (0-1)
+    let qualityGain: Float               // Quality difference between best and worst face
+    let hasSignificantImprovement: Bool  // Whether improvement is worth attempting
+    let specificImprovements: [ImprovementType]  // Types of improvements available
+    let confidence: Float                 // Confidence in successful replacement
+    
+    init(overallPotential: Float,
+         qualityGain: Float,
+         hasSignificantImprovement: Bool,
+         specificImprovements: [ImprovementType],
+         confidence: Float) {
+        self.overallPotential = max(0.0, min(1.0, overallPotential))
+        self.qualityGain = qualityGain
+        self.hasSignificantImprovement = hasSignificantImprovement
+        self.specificImprovements = specificImprovements
+        self.confidence = max(0.0, min(1.0, confidence))
+    }
+    
+    /// Primary improvement type (highest priority)
+    var primaryImprovementType: ImprovementType {
+        return specificImprovements.first ?? .poorExpression
+    }
+    
+    /// Whether this improvement should be attempted
+    var shouldAttempt: Bool {
+        return hasSignificantImprovement && confidence > 0.4 && overallPotential > 0.3
+    }
+}
+
 // MARK: - Vision Framework Integration Helpers
 
 extension FaceQualityData {
