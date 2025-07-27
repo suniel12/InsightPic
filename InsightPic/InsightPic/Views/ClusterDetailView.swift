@@ -11,6 +11,19 @@ struct ClusterMomentsDetailView: View {
     @State private var sortedPhotos: [Photo] = []
     @State private var selectedPhoto: Photo?
     @State private var isLoading = true
+    @State private var currentCluster: PhotoCluster
+    @State private var showingManualOverrideAlert = false
+    @State private var showingResetAlert = false
+    @State private var pendingRepresentativePhoto: Photo?
+    @State private var showingRankingExplanation = false
+    @State private var selectedPhotoForExplanation: PhotoWrapper?
+    
+    init(cluster: PhotoCluster, photoViewModel: PhotoLibraryViewModel, curationService: ClusterCurationService) {
+        self.cluster = cluster
+        self.photoViewModel = photoViewModel
+        self.curationService = curationService
+        self._currentCluster = State(initialValue: cluster)
+    }
     
     private let columns = [
         GridItem(.adaptive(minimum: 120, maximum: 150), spacing: 2),
@@ -26,10 +39,26 @@ struct ClusterMomentsDetailView: View {
             
             // Main Content
             VStack(spacing: 0) {
-                // Cluster info header
-                ClusterMomentsInfoHeader(cluster: cluster, photoCount: sortedPhotos.count)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 60) // Account for status bar
+                // Cluster info header with ranking explanation
+                VStack(spacing: 12) {
+                    ClusterMomentsInfoHeader(cluster: cluster, photoCount: sortedPhotos.count)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 60) // Account for status bar
+                    
+                    // Ranking explanation section (Task 3.2.1)
+                    if let representative = currentCluster.clusterRepresentativePhoto {
+                        RankingExplanationSection(
+                            representativePhoto: representative,
+                            cluster: currentCluster,
+                            isExpanded: showingRankingExplanation,
+                            onToggle: { showingRankingExplanation.toggle() },
+                            onPhotoTap: { photo in
+                                selectedPhotoForExplanation = PhotoWrapper(photo: photo)
+                            }
+                        )
+                        .padding(.horizontal, 16)
+                    }
+                }
                 
                 Divider()
                     .padding(.vertical, 8)
@@ -60,7 +89,10 @@ struct ClusterMomentsDetailView: View {
                                 ClusterMomentsPhotoThumbnailView(
                                     photo: photo,
                                     photoViewModel: photoViewModel,
-                                    onTap: { selectedPhoto = photo }
+                                    isCurrentRepresentative: photo.id == currentCluster.clusterRepresentativePhoto?.id,
+                                    hasManualOverride: currentCluster.representativeSelectionReason == .manualOverride,
+                                    onTap: { selectedPhoto = photo },
+                                    onSetAsRepresentative: { setPhotoAsRepresentative(photo) }
                                 )
                             }
                         }
@@ -118,6 +150,27 @@ struct ClusterMomentsDetailView: View {
                 .padding(.top, 8)
                 
                 Spacer()
+                
+                // Reset to automatic button (if manual override is active)
+                if currentCluster.representativeSelectionReason == .manualOverride {
+                    Button(action: {
+                        showingResetAlert = true
+                    }) {
+                        VStack(spacing: 2) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("Reset Auto")
+                                .font(.caption2)
+                                .fontWeight(.medium)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.orange.opacity(0.8))
+                        .cornerRadius(12)
+                    }
+                    .padding(.bottom, 8)
+                }
             }
         }
         .navigationBarHidden(true)
@@ -132,6 +185,31 @@ struct ClusterMomentsDetailView: View {
                 showPhotoCounter: true
             )
         }
+        .alert("Set as Cluster Thumbnail?", isPresented: $showingManualOverrideAlert) {
+            Button("Cancel", role: .cancel) {
+                pendingRepresentativePhoto = nil
+            }
+            Button("Set as Thumbnail") {
+                confirmManualOverride()
+            }
+        } message: {
+            if let photo = pendingRepresentativePhoto {
+                Text("This will override the automatic selection and use this photo as the cluster thumbnail.")
+            }
+        }
+        .alert("Reset to Automatic?", isPresented: $showingResetAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Reset") {
+                resetToAutomaticRanking()
+            }
+        } message: {
+            Text("This will remove the manual override and let the system automatically select the best thumbnail.")
+        }
+        .sheet(item: $selectedPhotoForExplanation) { wrapper in
+            PhotoRankingDetailView(photo: wrapper.photo, cluster: currentCluster)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
     
     private func loadSortedPhotos() async {
@@ -140,6 +218,56 @@ struct ClusterMomentsDetailView: View {
         await MainActor.run {
             self.sortedPhotos = sorted
             self.isLoading = false
+        }
+    }
+    
+    // MARK: - Manual Override Methods (Task 3.1)
+    
+    private func setPhotoAsRepresentative(_ photo: Photo) {
+        pendingRepresentativePhoto = photo
+        showingManualOverrideAlert = true
+    }
+    
+    private func confirmManualOverride() {
+        guard let photo = pendingRepresentativePhoto else { return }
+        
+        Task {
+            // Update cluster through curation service
+            await curationService.updateClusterRepresentative(currentCluster, newRepresentative: photo)
+            
+            // Update local cluster state
+            var updatedCluster = currentCluster
+            updatedCluster.setManualRepresentative(photo)
+            
+            await MainActor.run {
+                currentCluster = updatedCluster
+                pendingRepresentativePhoto = nil
+                
+                // Reload sorted photos to reflect changes
+                Task {
+                    await loadSortedPhotos()
+                }
+            }
+        }
+    }
+    
+    private func resetToAutomaticRanking() {
+        Task {
+            // Reset to automatic selection through curation service
+            await curationService.recomputeClusterRepresentative(currentCluster)
+            
+            // Update local cluster state
+            var recomputedCluster = currentCluster
+            recomputedCluster.clearRanking()
+            
+            await MainActor.run {
+                currentCluster = recomputedCluster
+                
+                // Reload sorted photos to reflect changes
+                Task {
+                    await loadSortedPhotos()
+                }
+            }
         }
     }
     
@@ -297,7 +425,7 @@ struct ClusterMomentsDetailView: View {
                     }
                     
                     // Run sequential analysis to prevent hanging
-                    let photosToAnalyze = Array(sortedPhotos.prefix(2)) // Limit to 2 photos
+                    let photosToAnalyze = await MainActor.run { Array(sortedPhotos.prefix(2)) } // Limit to 2 photos
                     print("📊 Analyzing \(photosToAnalyze.count) photos sequentially...")
                     
                     let detailedAnalysis = try await withThrowingTaskGroup(of: [String: [FaceQualityData]].self) { group in
@@ -580,7 +708,10 @@ struct ClusterQualityDistributionBar: View {
 struct ClusterMomentsPhotoThumbnailView: View {
     let photo: Photo
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
+    let isCurrentRepresentative: Bool
+    let hasManualOverride: Bool
     let onTap: () -> Void
+    let onSetAsRepresentative: () -> Void
     
     @State private var thumbnailImage: UIImage?
     @State private var isLoading = true
@@ -613,45 +744,80 @@ struct ClusterMomentsPhotoThumbnailView: View {
         .clipped()
         .cornerRadius(8)
         .overlay(
-            // Perfect Moment Debug Overlay
+            // Representative indicator and status overlay
             VStack {
                 HStack {
+                    // Manual override indicator (Task 3.1.3)
+                    if hasManualOverride && isCurrentRepresentative {
+                        VStack(spacing: 1) {
+                            Image(systemName: "hand.raised.fill")
+                                .font(.caption2)
+                                .foregroundColor(.white)
+                            Text("MANUAL")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                        .padding(3)
+                        .background(.orange.opacity(0.9))
+                        .cornerRadius(4)
+                        .padding(.leading, 4)
+                        .padding(.top, 4)
+                    }
+                    
                     Spacer()
-                    if photo.isPerfectMoment {
-                        VStack(spacing: 2) {
-                            Image(systemName: "sparkles")
-                                .font(.caption2)
-                                .foregroundColor(.white)
-                            Text("PM")
-                                .font(.caption2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
+                    
+                    // Status indicators
+                    VStack(spacing: 2) {
+                        // Current representative badge
+                        if isCurrentRepresentative {
+                            VStack(spacing: 1) {
+                                Image(systemName: "star.fill")
+                                    .font(.caption2)
+                                    .foregroundColor(.white)
+                                Text("REP")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                            .padding(3)
+                            .background(.green.opacity(0.9))
+                            .cornerRadius(4)
                         }
-                        .padding(4)
-                        .background(.purple.opacity(0.8))
-                        .cornerRadius(6)
-                    } else {
-                        VStack(spacing: 2) {
-                            Image(systemName: "circle")
-                                .font(.caption2)
-                                .foregroundColor(.white)
-                            Text("REG")
-                                .font(.caption2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
+                        
+                        // Perfect Moment indicator
+                        if photo.isPerfectMoment {
+                            VStack(spacing: 1) {
+                                Image(systemName: "sparkles")
+                                    .font(.caption2)
+                                    .foregroundColor(.white)
+                                Text("PM")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                            .padding(3)
+                            .background(.purple.opacity(0.9))
+                            .cornerRadius(4)
                         }
-                        .padding(4)
-                        .background(.gray.opacity(0.8))
-                        .cornerRadius(6)
                     }
                 }
                 Spacer()
             }
-            .padding(4),
-            alignment: .topTrailing
+            .padding(4)
         )
         .onTapGesture {
             onTap()
+        }
+        .contextMenu {
+            // Set as representative option (Task 3.1.1)
+            if !isCurrentRepresentative {
+                Button(action: onSetAsRepresentative) {
+                    Label("Set as Cluster Thumbnail", systemImage: "star.circle")
+                }
+            }
+            
+            // View photo option
+            Button(action: onTap) {
+                Label("View Photo", systemImage: "eye")
+            }
         }
         .onAppear {
             loadThumbnail()
@@ -670,9 +836,542 @@ struct ClusterMomentsPhotoThumbnailView: View {
     }
 }
 
+// MARK: - Ranking Explanation Section (Task 3.2)
 
-// MARK: - Photo Item for fullScreenCover
+struct RankingExplanationSection: View {
+    let representativePhoto: Photo
+    let cluster: PhotoCluster
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    let onPhotoTap: (Photo) -> Void
+    
+    private var selectionReason: RepresentativeSelectionReason {
+        cluster.representativeSelectionReason ?? .highestOverallQuality
+    }
+    
+    private var rankingConfidence: Float {
+        cluster.rankingConfidence
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header with toggle
+            Button(action: onToggle) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Why This Photo?")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
+                        
+                        Text(selectionReason.shortDescription)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    // Confidence indicator
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(confidenceColor)
+                            .frame(width: 8, height: 8)
+                        
+                        Text(confidenceText)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .background(Color(.systemGray6))
+            .cornerRadius(8)
+            
+            // Expanded content
+            if isExpanded {
+                VStack(spacing: 12) {
+                    Divider()
+                        .padding(.horizontal, 12)
+                    
+                    // Quality breakdown (Task 3.2.2)
+                    ClusterQualityBreakdownView(photo: representativePhoto, cluster: cluster)
+                    
+                    // Comparison with other photos (Task 3.2.3)
+                    if cluster.photos.count > 1 {
+                        PhotoComparisonView(
+                            representativePhoto: representativePhoto,
+                            cluster: cluster,
+                            onPhotoTap: onPhotoTap
+                        )
+                    }
+                    
+                    // Educational explanation
+                    RankingEducationView(reason: selectionReason)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+                .background(Color(.systemGray6))
+                .cornerRadius(8, corners: [.bottomLeft, .bottomRight])
+            }
+        }
+    }
+    
+    private var confidenceColor: Color {
+        switch rankingConfidence {
+        case 0.8...1.0: return .green
+        case 0.6..<0.8: return .blue
+        case 0.4..<0.6: return .orange
+        default: return .red
+        }
+    }
+    
+    private var confidenceText: String {
+        switch rankingConfidence {
+        case 0.8...1.0: return "High"
+        case 0.6..<0.8: return "Good"
+        case 0.4..<0.6: return "Fair"
+        default: return "Low"
+        }
+    }
+}
 
+// MARK: - Cluster Quality Breakdown View (Task 3.2.2)
+
+struct ClusterQualityBreakdownView: View {
+    let photo: Photo
+    let cluster: PhotoCluster
+    
+    private var qualityScores: QualityScores {
+        calculateQualityScores()
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Quality Breakdown")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+            
+            VStack(spacing: 6) {
+                QualityScoreRow(
+                    title: "Technical Quality",
+                    score: qualityScores.technical,
+                    icon: "camera",
+                    color: .blue,
+                    tooltip: "Sharpness, exposure, and composition"
+                )
+                
+                QualityScoreRow(
+                    title: "Facial Quality",
+                    score: qualityScores.facial,
+                    icon: "face.smiling",
+                    color: .green,
+                    tooltip: "Expression quality, eye state, and pose"
+                )
+                
+                QualityScoreRow(
+                    title: "Context Score",
+                    score: qualityScores.context,
+                    icon: "scope",
+                    color: .purple,
+                    tooltip: "Timing and situational relevance"
+                )
+                
+                Divider()
+                
+                QualityScoreRow(
+                    title: "Overall Rating",
+                    score: qualityScores.overall,
+                    icon: "star.fill",
+                    color: .orange,
+                    tooltip: "Combined quality assessment"
+                )
+            }
+        }
+    }
+    
+    private func calculateQualityScores() -> QualityScores {
+        // Extract scores from photo analysis
+        let technical = Float(photo.overallScore?.technical ?? 0.5)
+        let facial = photo.faceQuality?.compositeScore ?? 0.5
+        let context = Float(photo.overallScore?.context ?? 0.5)
+        let overall = Float(photo.overallScore?.overall ?? 0.5)
+        
+        return QualityScores(
+            technical: technical,
+            facial: facial,
+            context: context,
+            overall: overall
+        )
+    }
+}
+
+struct QualityScores {
+    let technical: Float
+    let facial: Float
+    let context: Float
+    let overall: Float
+}
+
+struct QualityScoreRow: View {
+    let title: String
+    let score: Float
+    let icon: String
+    let color: Color
+    let tooltip: String
+    
+    @State private var showingTooltip = false
+    
+    var body: some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundColor(color)
+                .frame(width: 16)
+            
+            Text(title)
+                .font(.caption)
+                .fontWeight(.medium)
+            
+            // Info button for tooltip (Task 3.2.4)
+            Button(action: { showingTooltip = true }) {
+                Image(systemName: "info.circle")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .alert(title, isPresented: $showingTooltip) {
+                Button("OK") { }
+            } message: {
+                Text(tooltip)
+            }
+            
+            Spacer()
+            
+            // Score visualization
+            HStack(spacing: 4) {
+                ProgressView(value: Double(score), total: 1.0)
+                    .progressViewStyle(LinearProgressViewStyle(tint: color))
+                    .frame(width: 60)
+                
+                Text("\(Int(score * 100))%")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundColor(color)
+                    .frame(width: 30, alignment: .trailing)
+            }
+        }
+    }
+}
+
+// MARK: - Photo Comparison View (Task 3.2.3)
+
+struct PhotoComparisonView: View {
+    let representativePhoto: Photo
+    let cluster: PhotoCluster
+    let onPhotoTap: (Photo) -> Void
+    
+    private var otherPhotos: [Photo] {
+        cluster.photos.filter { $0.id != representativePhoto.id }.prefix(3).map { $0 }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Compared to Other Photos")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+            
+            HStack(spacing: 8) {
+                // Representative photo
+                ComparisonPhotoView(
+                    photo: representativePhoto,
+                    title: "Selected",
+                    isSelected: true,
+                    onTap: { onPhotoTap(representativePhoto) }
+                )
+                
+                // Other photos
+                ForEach(otherPhotos, id: \.id) { photo in
+                    ComparisonPhotoView(
+                        photo: photo,
+                        title: "Alt",
+                        isSelected: false,
+                        onTap: { onPhotoTap(photo) }
+                    )
+                }
+                
+                if otherPhotos.count < cluster.photos.count - 1 {
+                    Text("+\(cluster.photos.count - otherPhotos.count - 1)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .frame(width: 40, height: 40)
+                        .background(Color(.systemGray5))
+                        .cornerRadius(6)
+                }
+                
+                Spacer()
+            }
+        }
+    }
+}
+
+struct ComparisonPhotoView: View {
+    let photo: Photo
+    let title: String
+    let isSelected: Bool
+    let onTap: () -> Void
+    
+    @State private var thumbnail: UIImage?
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            Button(action: onTap) {
+                Group {
+                    if let image = thumbnail {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        Rectangle()
+                            .fill(Color(.systemGray5))
+                    }
+                }
+                .frame(width: 40, height: 40)
+                .clipped()
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? Color.green : Color.clear, lineWidth: 2)
+                )
+            }
+            
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(isSelected ? .green : .secondary)
+                .fontWeight(isSelected ? .medium : .regular)
+        }
+        .onAppear {
+            loadThumbnail()
+        }
+    }
+    
+    private func loadThumbnail() {
+        Task {
+            // In a real implementation, this would load from PhotoLibraryService
+            // For now, use placeholder
+        }
+    }
+}
+
+// MARK: - Ranking Education View (Task 3.2.4)
+
+struct RankingEducationView: View {
+    let reason: RepresentativeSelectionReason
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Why This Selection?")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+            
+            Text(educationalExplanation)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.leading)
+        }
+    }
+    
+    private var educationalExplanation: String {
+        switch reason {
+        case .highestOverallQuality:
+            return "This photo scored highest across all quality metrics including sharpness, exposure, and composition. The algorithm weighs technical excellence when facial quality is similar across photos."
+        case .bestFacialQuality:
+            return "This photo was selected for having the best facial expressions, including open eyes and natural smiles. Facial quality is prioritized for photos with people, especially in portrait sessions."
+        case .balancedQualityAndFaces:
+            return "This photo offers the best balance between technical quality and facial expression quality. The algorithm found optimal trade-offs between multiple quality factors."
+        case .onlyOptionAvailable:
+            return "This was the only suitable photo available in this cluster that met minimum quality standards for representative selection."
+        case .fallbackSelection:
+            return "This photo was selected as a fallback when no other options met the preferred quality criteria. Manual override may be helpful here."
+        case .manualOverride:
+            return "You manually selected this photo as the cluster thumbnail, overriding the automatic ranking system. This choice will be remembered for this cluster."
+        }
+    }
+}
+
+// MARK: - Photo Ranking Detail View (Task 3.2)
+
+struct PhotoRankingDetailView: View {
+    let photo: Photo
+    let cluster: PhotoCluster
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 20) {
+                    // Photo preview
+                    AsyncImage(url: nil) { _ in
+                        Rectangle()
+                            .fill(Color(.systemGray5))
+                            .aspectRatio(4/3, contentMode: .fit)
+                            .cornerRadius(12)
+                    }
+                    .frame(maxHeight: 200)
+                    .padding(.horizontal)
+                    
+                    // Detailed quality breakdown
+                    ClusterQualityBreakdownView(photo: photo, cluster: cluster)
+                        .padding(.horizontal)
+                    
+                    // Position in cluster ranking
+                    ClusterRankingPositionView(photo: photo, cluster: cluster)
+                        .padding(.horizontal)
+                    
+                    // Technical details
+                    TechnicalDetailsView(photo: photo)
+                        .padding(.horizontal)
+                    
+                    Spacer(minLength: 20)
+                }
+            }
+            .navigationTitle("Photo Analysis")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ClusterRankingPositionView: View {
+    let photo: Photo
+    let cluster: PhotoCluster
+    
+    private var rankingPosition: Int {
+        if let index = cluster.rankedPhotos.firstIndex(where: { $0.id == photo.id }) {
+            return index + 1
+        }
+        return cluster.photos.count
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Cluster Ranking")
+                .font(.headline)
+            
+            HStack {
+                Text("Position:")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                
+                Text("#\(rankingPosition) of \(cluster.photos.count)")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                
+                Spacer()
+            }
+            
+            if photo.id == cluster.clusterRepresentativePhoto?.id {
+                HStack {
+                    Image(systemName: "star.fill")
+                        .foregroundColor(.green)
+                    Text("Current cluster thumbnail")
+                        .font(.subheadline)
+                        .foregroundColor(.green)
+                        .fontWeight(.medium)
+                }
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
+struct TechnicalDetailsView: View {
+    let photo: Photo
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Technical Details")
+                .font(.headline)
+            
+            if let technical = photo.technicalQuality {
+                VStack(spacing: 8) {
+                    DetailRow(title: "Sharpness", value: "\(Int(technical.sharpness * 100))%")
+                    DetailRow(title: "Exposure", value: "\(Int(technical.exposure * 100))%")
+                    DetailRow(title: "Composition", value: "\(Int(technical.composition * 100))%")
+                }
+            }
+            
+            if let faceQuality = photo.faceQuality {
+                VStack(spacing: 8) {
+                    DetailRow(title: "Faces Detected", value: "\(faceQuality.faceCount)")
+                    DetailRow(title: "Facial Quality", value: "\(Int(faceQuality.compositeScore * 100))%")
+                }
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
+struct DetailRow: View {
+    let title: String
+    let value: String
+    
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.medium)
+        }
+    }
+}
+
+// MARK: - Helper Types
+
+struct PhotoWrapper: Identifiable {
+    let id = UUID()
+    let photo: Photo
+}
+
+// MARK: - Extensions
+
+extension View {
+    func cornerRadius(_ radius: CGFloat, corners: UIRectCorner) -> some View {
+        clipShape(RoundedCorner(radius: radius, corners: corners))
+    }
+}
+
+struct RoundedCorner: Shape {
+    var radius: CGFloat = .infinity
+    var corners: UIRectCorner = .allCorners
+    
+    func path(in rect: CGRect) -> Path {
+        let path = UIBezierPath(
+            roundedRect: rect,
+            byRoundingCorners: corners,
+            cornerRadii: CGSize(width: radius, height: radius)
+        )
+        return Path(path.cgPath)
+    }
+}
 
 // MARK: - Preview
 

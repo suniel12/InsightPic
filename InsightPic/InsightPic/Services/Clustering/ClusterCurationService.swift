@@ -1196,6 +1196,53 @@ class ClusterCurationService: ObservableObject {
         return min(1.0, score)
     }
     
+    // MARK: - Manual Representative Override (Task 3.1.2)
+    
+    /// Updates the cluster representative with manual selection
+    func updateClusterRepresentative(_ cluster: PhotoCluster, newRepresentative: Photo) async {
+        // Validate that the photo belongs to the cluster
+        guard cluster.photos.contains(where: { $0.id == newRepresentative.id }) else {
+            print("Warning: Cannot set representative photo that is not in cluster")
+            return
+        }
+        
+        // Update the cluster with manual selection
+        var updatedCluster = cluster
+        updatedCluster.setManualRepresentative(newRepresentative)
+        
+        // In a real implementation, you would persist this change
+        // For now, we'll just log the action
+        print("✅ Manual representative updated for cluster \(cluster.id): \(newRepresentative.assetIdentifier)")
+    }
+    
+    /// Recomputes the cluster representative using automatic ranking
+    func recomputeClusterRepresentative(_ cluster: PhotoCluster) async {
+        // Clear manual override and recompute
+        var updatedCluster = cluster
+        updatedCluster.clearRanking()
+        
+        // Recompute the best representative
+        let rankingResult = await findBestPhotoInClusterWithRanking(updatedCluster)
+        
+        // Update with automatic selection
+        updatedCluster.updateRanking(
+            rankedPhotos: await rankPhotosWithAdaptiveWeighting(updatedCluster),
+            representativePhoto: rankingResult.photo,
+            reason: rankingResult.reason,
+            confidence: rankingResult.confidence
+        )
+        
+        print("✅ Automatic representative recomputed for cluster \(cluster.id): \(rankingResult.photo.assetIdentifier)")
+    }
+    
+    /// Gets updated cluster with current representative settings
+    func getUpdatedCluster(_ clusterId: UUID) async -> PhotoCluster? {
+        // In a real implementation, this would fetch from persistent storage
+        // For now, return nil as this is a placeholder
+        print("Note: getUpdatedCluster is placeholder - would fetch from storage")
+        return nil
+    }
+    
     // MARK: - Statistics
     
     func generateClusterStatistics(_ representatives: [ClusterRepresentative]) -> ClusterStatistics {
