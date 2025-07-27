@@ -69,7 +69,7 @@ struct FaceQualityData {
             issues.append(.unflatteringAngle)
         }
         
-        if sharpness < 0.6 {
+        if sharpness < 0.3 {  // Lowered threshold - was too strict at 0.6
             issues.append(.blurredFace)
         }
         

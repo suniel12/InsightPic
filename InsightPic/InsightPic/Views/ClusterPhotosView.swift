@@ -10,7 +10,6 @@ struct ClusterPhotosView: View {
     @State private var isCheckingForExistingResults = true
     @State private var clusterRepresentatives: [ClusterRepresentative] = []
     @State private var selectedCluster: PhotoCluster?
-    @State private var showingFaceAnalysisDebug = false
     @State private var debugCluster: PhotoCluster?
     
     private let columns = [
@@ -48,7 +47,6 @@ struct ClusterPhotosView: View {
                     },
                     onDebugTap: { cluster in
                         debugCluster = cluster
-                        showingFaceAnalysisDebug = true
                     }
                 )
             }
@@ -109,10 +107,8 @@ struct ClusterPhotosView: View {
         .fullScreenCover(item: $selectedCluster) { cluster in
             ClusterMomentsDetailView(cluster: cluster, photoViewModel: photoViewModel, curationService: curationService)
         }
-        .sheet(isPresented: $showingFaceAnalysisDebug) {
-            if let cluster = debugCluster {
-                FaceAnalysisDebugView(cluster: cluster, photoViewModel: photoViewModel)
-            }
+        .sheet(item: $debugCluster) { cluster in
+            FaceAnalysisDebugView(cluster: cluster, photoViewModel: photoViewModel)
         }
     }
     

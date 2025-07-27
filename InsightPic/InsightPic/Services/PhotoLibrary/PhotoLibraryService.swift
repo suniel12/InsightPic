@@ -100,7 +100,39 @@ class PhotoLibraryService: PhotoLibraryServiceProtocol {
     // MARK: - Image Loading
     
     func loadImage(for assetIdentifier: String, targetSize: CGSize) async throws -> UIImage? {
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil).firstObject else {
+        // Ensure we're checking PhotoKit authorization first
+        let authStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authStatus == .authorized || authStatus == .limited else {
+            print("ERROR: PhotoKit not authorized. Status: \(authStatus)")
+            throw PhotoCuratorError.photoLibraryAccessDenied
+        }
+        
+        // Fetch asset with comprehensive fallback approach
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.includeHiddenAssets = true
+        
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: fetchOptions)
+        
+        var validAsset: PHAsset?
+        
+        if let asset = fetchResult.firstObject {
+            validAsset = asset
+        } else {
+            print("ERROR: Asset not found for identifier: \(assetIdentifier)")
+            print("DEBUG: Fetch result count: \(fetchResult.count)")
+            
+            // Try alternative fetch without options as fallback
+            let fallbackResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil)
+            if let fallbackAsset = fallbackResult.firstObject {
+                print("DEBUG: Fallback fetch succeeded")
+                validAsset = fallbackAsset
+            } else {
+                print("ERROR: Fallback fetch also failed")
+                throw PhotoCuratorError.invalidPhotoAsset(assetIdentifier)
+            }
+        }
+        
+        guard let finalAsset = validAsset else {
             throw PhotoCuratorError.invalidPhotoAsset(assetIdentifier)
         }
         
@@ -111,7 +143,7 @@ class PhotoLibraryService: PhotoLibraryServiceProtocol {
             options.resizeMode = .exact
             
             imageManager.requestImage(
-                for: asset,
+                for: finalAsset,
                 targetSize: targetSize,
                 contentMode: .aspectFill,
                 options: options
@@ -130,7 +162,15 @@ class PhotoLibraryService: PhotoLibraryServiceProtocol {
     }
     
     func getFullResolutionImage(for assetIdentifier: String) async throws -> UIImage? {
+        // Ensure we're checking PhotoKit authorization first
+        let authStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authStatus == .authorized || authStatus == .limited else {
+            print("ERROR: PhotoKit not authorized for full resolution. Status: \(authStatus)")
+            throw PhotoCuratorError.photoLibraryAccessDenied
+        }
+        
         guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil).firstObject else {
+            print("ERROR: Asset not found for full resolution: \(assetIdentifier)")
             throw PhotoCuratorError.invalidPhotoAsset(assetIdentifier)
         }
         

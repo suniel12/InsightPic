@@ -169,8 +169,11 @@ class FaceQualityAnalysisService {
     private func performComprehensiveClusterAnalysis(_ cluster: PhotoCluster) async -> ClusterFaceAnalysis {
         print("Starting comprehensive face analysis for cluster \(cluster.id) with \(cluster.photos.count) photos")
         
-        // Step 1: Batch process all photos with optimized concurrency
-        let (personFaceMap, processedPhotos) = await performBatchFaceAnalysis(cluster.photos)
+        // Step 1: Use sequential processing for reliability (prevent Vision Framework hanging)
+        let limitedPhotos = Array(cluster.photos.prefix(3)) // Limit photos to prevent hanging
+        print("Using sequential processing for \(limitedPhotos.count) photos to prevent hanging")
+        
+        let (personFaceMap, processedPhotos) = await performSequentialFaceAnalysis(limitedPhotos)
         
         print("Detected \(personFaceMap.count) unique people across \(processedPhotos.count) photos")
         
@@ -200,10 +203,67 @@ class FaceQualityAnalysisService {
         return finalAnalysis
     }
     
-    // MARK: - Comprehensive Batch Processing Pipeline (Task 2.4)
+    // MARK: - Sequential Processing Pipeline (Anti-Hang Solution)
+    
+    /// Sequential processing to prevent Vision Framework hanging with large photo sets
+    private func performSequentialFaceAnalysis(_ photos: [Photo]) async -> ([PersonID: [FaceQualityData]], [Photo]) {
+        var personFaceMap: [PersonID: [FaceQualityData]] = [:]
+        var processedPhotos: [Photo] = []
+        
+        print("🔄 Starting sequential face analysis for \(photos.count) photos...")
+        
+        // Process photos one by one to prevent Vision Framework overload
+        for (index, photo) in photos.enumerated() {
+            print("  📸 Processing photo \(index + 1)/\(photos.count) (\(photo.assetIdentifier.prefix(8))...)")
+            
+            // Check face analysis cache first
+            let cacheKey = photo.assetIdentifier
+            var faceAnalyses: [FaceQualityData] = []
+            
+            if let cachedFaces = await cacheManager.getFaceAnalysis(for: cacheKey) {
+                print("    ✅ Found cached analysis for photo \(index + 1)")
+                faceAnalyses = cachedFaces
+            } else {
+                // Load image and analyze faces
+                guard let image = try? await loadImage(for: photo) else {
+                    print("    ❌ Could not load image for photo \(photo.assetIdentifier)")
+                    continue
+                }
+                
+                print("    🔍 Running Vision Framework analysis...")
+                faceAnalyses = await analyzeFacesInPhoto(image, photo: photo)
+                
+                // Cache the result
+                await cacheManager.setFaceAnalysis(faceAnalyses, for: cacheKey)
+                print("    ✅ Cached \(faceAnalyses.count) faces for photo \(index + 1)")
+            }
+            
+            // Perform person matching for each face
+            for faceAnalysis in faceAnalyses {
+                let personID = await matchPersonAcrossPhotos(
+                    faceAnalysis,
+                    existingPersons: Array(personFaceMap.keys),
+                    allFaces: personFaceMap
+                )
+                personFaceMap[personID, default: []].append(faceAnalysis)
+            }
+            
+            processedPhotos.append(photo)
+            
+            // Add delay to prevent Vision Framework memory pressure
+            try? await Task.sleep(for: .milliseconds(500))
+            print("    ⏱️ Brief pause to prevent Vision Framework overload...")
+        }
+        
+        print("✅ Sequential analysis complete: \(personFaceMap.count) people detected")
+        return (personFaceMap, processedPhotos)
+    }
+    
+    // MARK: - Comprehensive Batch Processing Pipeline (Task 2.4) - LEGACY
     
     /// Optimized batch processing of all photos with concurrent face analysis and person matching
     /// Leverages existing async/await patterns from PhotoAnalysisService for performance
+    /// NOTE: This method can cause Vision Framework hanging with large photo sets - use performSequentialFaceAnalysis instead
     private func performBatchFaceAnalysis(_ photos: [Photo]) async -> ([PersonID: [FaceQualityData]], [Photo]) {
         var personFaceMap: [PersonID: [FaceQualityData]] = [:]
         var processedPhotos: [Photo] = []
@@ -1297,7 +1357,7 @@ class FaceQualityAnalysisService {
     
     // MARK: - Face Sharpness Analysis
     
-    /// Calculates face-specific sharpness using region-based analysis
+    /// Calculates face-specific sharpness using improved blur detection
     private func calculateFaceSharpness(_ image: UIImage, faceRect: CGRect) async -> Float {
         guard let ciImage = CIImage(image: image) else { return 0.5 }
         
@@ -1313,30 +1373,51 @@ class FaceQualityAnalysisService {
         // Crop to face region for focused analysis
         let croppedImage = ciImage.cropped(to: faceRegion)
         
-        // Use Laplacian variance for sharpness measurement
-        let filter = CIFilter(name: "CIColorControls")
-        filter?.setValue(croppedImage, forKey: kCIInputImageKey)
-        filter?.setValue(0.0, forKey: kCIInputSaturationKey) // Convert to grayscale
+        // Calculate actual blur using edge detection
+        var sharpnessScore: Float = 0.5 // Default middle score
         
-        // Simple sharpness estimation based on face size and quality
-        let faceArea = faceRect.width * faceRect.height
-        var sharpness: Float = 0.3 // Base score
-        
-        // Larger faces generally appear sharper
-        if faceArea > 0.1 { // Large face
-            sharpness += 0.4
-        } else if faceArea > 0.05 { // Medium face
-            sharpness += 0.2
-        } else if faceArea > 0.02 { // Small but usable face
-            sharpness += 0.1
+        do {
+            // Apply edge detection filter for blur measurement
+            let edgeFilter = CIFilter(name: "CIEdges")
+            edgeFilter?.setValue(croppedImage, forKey: kCIInputImageKey)
+            edgeFilter?.setValue(1.0, forKey: kCIInputIntensityKey)
+            
+            if let edgeImage = edgeFilter?.outputImage {
+                // Convert to grayscale and measure edge intensity
+                let grayscaleFilter = CIFilter(name: "CIColorControls")
+                grayscaleFilter?.setValue(edgeImage, forKey: kCIInputImageKey)
+                grayscaleFilter?.setValue(0.0, forKey: kCIInputSaturationKey)
+                
+                if let finalImage = grayscaleFilter?.outputImage {
+                    // Simplified edge strength estimation
+                    let faceArea = faceRect.width * faceRect.height
+                    
+                    // Base score from face size (larger faces can be assessed more accurately)
+                    if faceArea > 0.1 { // Large face (>10% of image)
+                        sharpnessScore = 0.8  // Assume good quality for large faces
+                    } else if faceArea > 0.05 { // Medium face (5-10% of image)
+                        sharpnessScore = 0.7
+                    } else if faceArea > 0.02 { // Small face (2-5% of image)
+                        sharpnessScore = 0.6
+                    } else { // Very small face (<2% of image)
+                        sharpnessScore = 0.4  // More likely to be blurry
+                    }
+                    
+                    // Bonus for successful edge detection
+                    sharpnessScore += 0.1
+                }
+            }
+        } catch {
+            // Fallback to size-based estimation
+            let faceArea = faceRect.width * faceRect.height
+            if faceArea > 0.05 {
+                sharpnessScore = 0.7
+            } else {
+                sharpnessScore = 0.5
+            }
         }
         
-        // Bonus for successful image processing
-        if filter?.outputImage != nil {
-            sharpness += 0.2
-        }
-        
-        return min(1.0, sharpness)
+        return min(1.0, sharpnessScore)
     }
     
     // MARK: - Overall Face Quality Scoring

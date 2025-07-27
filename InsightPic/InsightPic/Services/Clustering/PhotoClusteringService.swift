@@ -411,10 +411,37 @@ class PhotoClusterRankingService {
     func rankPhotosInCluster(_ cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> [PhotoRankingScore] {
         var rankingScores: [PhotoRankingScore] = []
         
+        // Initialize updated face analysis service for improved quality scoring
+        let faceAnalysisService = FaceQualityAnalysisService()
+        
         for photo in cluster.photos {
             guard let analysis = analysisResults[photo.id] else { continue }
             
-            let qualityScore = Float(analysis.overallScore)
+            // Use enhanced face quality analysis for photos with faces
+            let enhancedQualityScore: Float
+            if analysis.faces.count > 0 {
+                do {
+                    // Get detailed face analysis with improved smile detection
+                    let faceQualityResults = await faceAnalysisService.rankFaceQualityInPhotos([photo])
+                    if let faceQualityData = faceQualityResults[photo.assetIdentifier]?.first {
+                        // Use our enhanced face quality ranking with improved smile detection
+                        enhancedQualityScore = faceQualityData.qualityRank
+                        print("DEBUG: Enhanced face analysis for \(photo.assetIdentifier.prefix(8)): \(enhancedQualityScore)")
+                    } else {
+                        // Fallback to legacy analysis
+                        enhancedQualityScore = Float(analysis.overallScore)
+                        print("DEBUG: No enhanced analysis available, using legacy: \(enhancedQualityScore)")
+                    }
+                } catch {
+                    // Handle image loading errors gracefully
+                    print("ERROR: Face analysis failed for \(photo.assetIdentifier.prefix(8)): \(error)")
+                    enhancedQualityScore = Float(analysis.overallScore)
+                }
+            } else {
+                // For non-face photos, use legacy analysis
+                enhancedQualityScore = Float(analysis.overallScore)
+            }
+            
             let clusterRelevance = await calculateClusterRelevance(photo: photo, cluster: cluster, analysisResults: analysisResults)
             let uniquenessScore = await calculateUniquenessScore(photo: photo, cluster: cluster, analysisResults: analysisResults)
             let temporalOptimality = calculateTemporalOptimality(photo: photo, cluster: cluster)
@@ -424,7 +451,7 @@ class PhotoClusterRankingService {
             let ranking = PhotoRankingScore(
                 photo: photo,
                 overallRank: 0, // Will be set after sorting
-                qualityScore: qualityScore,
+                qualityScore: enhancedQualityScore,
                 clusterRelevance: clusterRelevance,
                 uniquenessScore: uniquenessScore,
                 temporalOptimality: temporalOptimality,
@@ -1041,6 +1068,13 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
     }
     
     func createSubClusters(for cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> [PhotoSubCluster] {
+        // TEMPORARY FIX: Disable sub-clustering to prevent Vision Framework memory crashes
+        // The crash occurs in createSubClustersByVisualSimilarity due to concurrent Vision requests
+        // TODO: Implement proper memory management and sequential processing
+        print("DEBUG: Sub-clustering temporarily disabled to prevent crashes")
+        return []
+        
+        /* DISABLED UNTIL MEMORY MANAGEMENT IS FIXED
         var subClusters: [PhotoSubCluster] = []
         
         // Create near-identical sub-clusters with tight similarity threshold
@@ -1067,6 +1101,7 @@ class PhotoClusteringService: PhotoClusteringServiceProtocol {
         }
         
         return subClusters
+        */
     }
     
     func calculateClusterQualityMetrics(for cluster: PhotoCluster, analysisResults: [UUID: PhotoAnalysisResult]) async -> ClusterQualityMetrics {
