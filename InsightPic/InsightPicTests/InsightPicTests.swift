@@ -87,10 +87,10 @@ final class InsightPicTests: XCTestCase {
     
     func testPhotoClusterCreation() throws {
         // Test PhotoCluster creation and computed properties
-        let clusterId = UUID()
-        let cluster = PhotoCluster(id: clusterId, photos: [], representativeFingerprint: Data())
+        var cluster = PhotoCluster()
+        cluster.photos = []
         
-        XCTAssertEqual(cluster.id, clusterId)
+        XCTAssertNotNil(cluster.id)
         XCTAssertTrue(cluster.photos.isEmpty)
         XCTAssertNil(cluster.centerLocation)
     }

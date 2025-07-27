@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Darwin
 
 // MARK: - Cluster Representative Model
 
@@ -223,6 +224,89 @@ struct RankingWeights {
 
 class ClusterCurationService: ObservableObject {
     
+    // MARK: - Caching Infrastructure (Task 4.1)
+    
+    /// Actor for thread-safe cluster ranking cache management
+    private actor RankingCacheManager {
+        private var representativeCache: [UUID: ClusterRepresentative] = [:]
+        private var rankingResultCache: [UUID: ClusterRankingResult] = [:]
+        private var lastUpdateTimes: [UUID: Date] = [:]
+        private let cacheExpirationTime: TimeInterval = 3600 // 1 hour
+        
+        func getRepresentative(for clusterID: UUID) -> ClusterRepresentative? {
+            // Check if cache entry has expired
+            if let lastUpdate = lastUpdateTimes[clusterID],
+               Date().timeIntervalSince(lastUpdate) > cacheExpirationTime {
+                clearCluster(clusterID)
+                return nil
+            }
+            return representativeCache[clusterID]
+        }
+        
+        func setRepresentative(_ representative: ClusterRepresentative, for clusterID: UUID) {
+            representativeCache[clusterID] = representative
+            lastUpdateTimes[clusterID] = Date()
+        }
+        
+        func getRankingResult(for clusterID: UUID) -> ClusterRankingResult? {
+            // Check if cache entry has expired
+            if let lastUpdate = lastUpdateTimes[clusterID],
+               Date().timeIntervalSince(lastUpdate) > cacheExpirationTime {
+                clearCluster(clusterID)
+                return nil
+            }
+            return rankingResultCache[clusterID]
+        }
+        
+        func setRankingResult(_ result: ClusterRankingResult, for clusterID: UUID) {
+            rankingResultCache[clusterID] = result
+            lastUpdateTimes[clusterID] = Date()
+        }
+        
+        func clearCluster(_ clusterID: UUID) {
+            representativeCache.removeValue(forKey: clusterID)
+            rankingResultCache.removeValue(forKey: clusterID)
+            lastUpdateTimes.removeValue(forKey: clusterID)
+        }
+        
+        func clearAll() {
+            representativeCache.removeAll()
+            rankingResultCache.removeAll()
+            lastUpdateTimes.removeAll()
+        }
+        
+        func invalidateExpiredEntries() {
+            let now = Date()
+            let expiredKeys = lastUpdateTimes.compactMap { key, lastUpdate in
+                now.timeIntervalSince(lastUpdate) > cacheExpirationTime ? key : nil
+            }
+            
+            for key in expiredKeys {
+                clearCluster(key)
+            }
+        }
+        
+        var statistics: (representativeCount: Int, rankingCount: Int, lastCleanup: Date?) {
+            return (representativeCache.count, rankingResultCache.count, lastUpdateTimes.values.max())
+        }
+        
+        func isClusterCached(_ clusterID: UUID) -> Bool {
+            guard let lastUpdate = lastUpdateTimes[clusterID] else { return false }
+            return Date().timeIntervalSince(lastUpdate) <= cacheExpirationTime
+        }
+        
+        /// Checks if cluster needs incremental update based on photo count changes
+        func needsIncrementalUpdate(_ cluster: PhotoCluster) -> Bool {
+            guard let cachedRepresentative = representativeCache[cluster.id] else { return true }
+            
+            // Check if photo count has changed (Task 4.2)
+            return cachedRepresentative.clusterSize != cluster.photos.count
+        }
+    }
+    
+    /// Thread-safe ranking cache manager
+    private let rankingCacheManager = RankingCacheManager()
+    
     // MARK: - Dependencies
     
     private let faceQualityAnalysisService: FaceQualityAnalysisService
@@ -231,16 +315,105 @@ class ClusterCurationService: ObservableObject {
     
     init(faceQualityAnalysisService: FaceQualityAnalysisService = FaceQualityAnalysisService()) {
         self.faceQualityAnalysisService = faceQualityAnalysisService
+        
+        // Schedule periodic cache cleanup
+        schedulePeriodicCacheCleanup()
+    }
+    
+    // MARK: - Cache Management (Task 4.1)
+    
+    /// Schedules periodic cache cleanup to prevent memory bloat
+    private func schedulePeriodicCacheCleanup() {
+        Task {
+            while true {
+                try? await Task.sleep(for: .seconds(1800)) // Clean every 30 minutes
+                await rankingCacheManager.invalidateExpiredEntries()
+                print("📊 ClusterCuration: Cleaned expired cache entries")
+            }
+        }
     }
     
     // MARK: - Public Methods
     
-    /// Analyzes clusters and returns representatives sorted by importance
+    /// Optimized batch processing for facial analysis across multiple clusters (Task 4.3)
+    private func batchProcessFacialAnalysis(for clusters: [PhotoCluster]) async -> [UUID: ClusterFaceAnalysis] {
+        var results: [UUID: ClusterFaceAnalysis] = [:]
+        
+        // Group clusters by priority (clusters with people get higher priority)
+        let prioritizedClusters = await withTaskGroup(of: (PhotoCluster, Bool).self) { group in
+            for cluster in clusters {
+                group.addTask {
+                    let photoType = await self.detectClusterType(cluster)
+                    let hasPeople = photoType.isPersonFocused
+                    return (cluster, hasPeople)
+                }
+            }
+            
+            var clusterPriorities: [(PhotoCluster, Bool)] = []
+            for await result in group {
+                clusterPriorities.append(result)
+            }
+            
+            return clusterPriorities.sorted { $0.1 && !$1.1 }.map { $0.0 }
+        }
+        
+        // Process clusters in batches to prevent memory issues
+        let batchSize = 3 // Process 3 clusters at a time
+        
+        for batch in stride(from: 0, to: prioritizedClusters.count, by: batchSize).map({
+            Array(prioritizedClusters[$0..<min($0 + batchSize, prioritizedClusters.count)])
+        }) {
+            print("📊 ClusterCuration: Batch processing \(batch.count) clusters for facial analysis...")
+            
+            await withTaskGroup(of: (UUID, ClusterFaceAnalysis).self) { group in
+                for cluster in batch {
+                    group.addTask {
+                        let analysis = await self.faceQualityAnalysisService.analyzeFaceQualityInCluster(cluster)
+                        return (cluster.id, analysis)
+                    }
+                }
+                
+                for await (clusterID, analysis) in group {
+                    results[clusterID] = analysis
+                }
+            }
+            
+            // Small delay between batches to prevent overwhelming the system
+            if batch.count == batchSize {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        
+        return results
+    }
+    
+    /// Analyzes clusters and returns representatives sorted by importance (with intelligent caching)
     func curateClusterRepresentatives(from clusters: [PhotoCluster]) async -> [ClusterRepresentative] {
         var representatives: [ClusterRepresentative] = []
+        var cacheMisses = 0
+        var cacheHits = 0
+        
+        print("📊 ClusterCuration: Processing \(clusters.count) clusters...")
         
         for cluster in clusters {
             guard !cluster.photos.isEmpty else { continue }
+            
+            // Check cache first (Task 4.1 - Intelligent Caching)
+            if let cachedRepresentative = await rankingCacheManager.getRepresentative(for: cluster.id) {
+                // Check if incremental update is needed (Task 4.2)
+                let needsUpdate = await rankingCacheManager.needsIncrementalUpdate(cluster)
+                
+                if !needsUpdate {
+                    representatives.append(cachedRepresentative)
+                    cacheHits += 1
+                    continue
+                } else {
+                    print("🔄 ClusterCuration: Incremental update needed for cluster \(cluster.id) (photo count changed)")
+                }
+            }
+            
+            // Cache miss or needs update - perform ranking analysis
+            cacheMisses += 1
             
             // Find best photo in cluster using enhanced quality scoring with facial analysis
             let rankingResult = await findBestPhotoInClusterWithRanking(cluster)
@@ -259,8 +432,59 @@ class ClusterCurationService: ObservableObject {
                 timeRange: cluster.timeRange
             )
             
+            // Cache the representative and ranking result for future use (Task 4.1)
+            await rankingCacheManager.setRepresentative(representative, for: cluster.id)
+            await rankingCacheManager.setRankingResult(rankingResult, for: cluster.id)
+            
+            // Record debug information for analytics (Task 4.1.4)
+            if cluster.photos.count > 1 {
+                let alternativePhotos = cluster.photos.filter { $0.id != rankingResult.photo.id }.prefix(3).map { photo in
+                    RankingDebugInfo.PhotoRankingDetail(
+                        photo: photo,
+                        technicalScore: Float(photo.overallScore?.technical ?? 0.5),
+                        facialScore: photo.faceQuality?.compositeScore ?? 0.5,
+                        contextScore: Float(photo.overallScore?.context ?? 0.5),
+                        combinedScore: Float(photo.overallScore?.overall ?? 0.5),
+                        rankPosition: cluster.photos.firstIndex(where: { $0.id == photo.id }) ?? 0,
+                        disqualificationReasons: []
+                    )
+                }
+                
+                let clusterType = await detectClusterType(cluster)
+                let weights = getOptimalRankingWeights(for: .mixedContent, cluster: cluster) // Simplified
+                
+                let decisionFactors = RankingDebugInfo.DecisionFactors(
+                    clusterType: .mixedContent, // Simplified for now
+                    weightingUsed: weights,
+                    facialAnalysisInfluence: clusterType.isPersonFocused ? 0.7 : 0.3,
+                    cacheHit: false,
+                    confidenceLevel: rankingResult.confidence
+                )
+                
+                let processingSteps = [
+                    RankingDebugInfo.ProcessingStep(
+                        step: "Ranking Analysis",
+                        duration: 0.1, // Simplified
+                        photosProcessed: cluster.photos.count,
+                        cacheHits: cacheHits
+                    )
+                ]
+                
+                await recordRankingDebugInfo(
+                    clusterID: cluster.id,
+                    selectedPhoto: rankingResult.photo,
+                    alternativePhotos: Array(alternativePhotos),
+                    decisionFactors: decisionFactors,
+                    processingSteps: processingSteps
+                )
+            }
+            
             representatives.append(representative)
         }
+        
+        // Log cache performance statistics
+        let cacheStats = await rankingCacheManager.statistics
+        print("📊 ClusterCuration: Cache performance - Hits: \(cacheHits), Misses: \(cacheMisses), Total cached: \(cacheStats.representativeCount)")
         
         // Sort by importance (cluster size) then by combined quality score
         return representatives.sorted { rep1, rep2 in
@@ -269,6 +493,753 @@ class ClusterCurationService: ObservableObject {
             }
             return rep1.combinedQualityScore > rep2.combinedQualityScore
         }
+    }
+    
+    // MARK: - Background Processing (Task 4.4)
+    
+    /// Updates cluster rankings in the background with progress reporting
+    func updateRankingsInBackground(
+        for clusters: [PhotoCluster],
+        progressCallback: @escaping (Float, String) -> Void
+    ) async {
+        let total = Float(clusters.count)
+        
+        for (index, cluster) in clusters.enumerated() {
+            let progress = Float(index) / total
+            progressCallback(progress, "Updating cluster \(index + 1) of \(clusters.count)...")
+            
+            // Check if update is needed
+            let needsUpdate = await rankingCacheManager.needsIncrementalUpdate(cluster)
+            
+            if needsUpdate {
+                // Perform ranking analysis
+                let rankingResult = await findBestPhotoInClusterWithRanking(cluster)
+                let importance = calculateClusterImportance(cluster)
+                
+                let representative = ClusterRepresentative(
+                    cluster: cluster,
+                    bestPhoto: rankingResult.photo,
+                    importance: importance,
+                    qualityScore: rankingResult.qualityScore,
+                    facialQualityScore: rankingResult.facialQualityScore,
+                    rankingConfidence: rankingResult.confidence,
+                    selectionReason: rankingResult.reason,
+                    timeRange: cluster.timeRange
+                )
+                
+                // Update cache
+                await rankingCacheManager.setRepresentative(representative, for: cluster.id)
+                await rankingCacheManager.setRankingResult(rankingResult, for: cluster.id)
+            }
+            
+            // Small delay to prevent overwhelming the system
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        
+        progressCallback(1.0, "Ranking updates complete")
+    }
+    
+    // MARK: - Ranking Analytics and Validation (Task 4.1)
+    
+    /// Comprehensive ranking quality metrics for algorithm validation
+    struct RankingQualityMetrics {
+        let accuracy: Float                    // How often automatic selection matches user preference
+        let confidence: Float                  // Average ranking confidence across clusters
+        let faceQualityImprovement: Float     // Facial quality improvement vs random selection
+        let overallQualityImprovement: Float  // Overall quality improvement vs random selection
+        let consistencyScore: Float           // How consistent rankings are across similar clusters
+        let processingTime: TimeInterval      // Average time to compute rankings
+        let cacheHitRate: Float              // Cache performance metric
+        let userOverrideRate: Float          // How often users manually override selections
+        let clusterTypeAccuracy: [ClusterType: Float] // Accuracy broken down by cluster type
+        
+        var qualityGrade: String {
+            let avgScore = (accuracy + confidence + faceQualityImprovement + overallQualityImprovement + consistencyScore) / 5.0
+            switch avgScore {
+            case 0.9...1.0: return "Excellent"
+            case 0.8..<0.9: return "Very Good"
+            case 0.7..<0.8: return "Good"
+            case 0.6..<0.7: return "Fair"
+            default: return "Needs Improvement"
+            }
+        }
+    }
+    
+    /// User satisfaction tracking for thumbnail selections
+    struct UserSatisfactionData {
+        let clusterID: UUID
+        let selectedRepresentative: Photo
+        let userAction: UserAction
+        let timestamp: Date
+        let sessionDuration: TimeInterval?
+        let deviceInfo: DeviceInfo?
+        
+        enum UserAction {
+            case accepted           // User kept automatic selection
+            case manualOverride     // User changed to different photo
+            case rejected          // User dismissed cluster
+            case shared            // User shared the photo (high satisfaction indicator)
+            case saved             // User saved photo to favorites
+        }
+        
+        struct DeviceInfo {
+            let model: String
+            let osVersion: String
+            let appVersion: String
+        }
+    }
+    
+    /// A/B Testing framework for ranking algorithm improvements
+    struct ABTestConfig {
+        let testID: String
+        let isActive: Bool
+        let variantA: RankingWeights    // Control group weights
+        let variantB: RankingWeights    // Test group weights
+        let trafficSplit: Float         // Percentage for variant B (0.0-1.0)
+        let startDate: Date
+        let endDate: Date
+        let minimumSampleSize: Int
+        
+        var isCurrentlyRunning: Bool {
+            let now = Date()
+            return isActive && now >= startDate && now <= endDate
+        }
+    }
+    
+    /// Debug information for ranking decisions
+    struct RankingDebugInfo {
+        let clusterID: UUID
+        let selectedPhoto: Photo
+        let alternativePhotos: [PhotoRankingDetail]
+        let decisionFactors: DecisionFactors
+        let processingSteps: [ProcessingStep]
+        let timestamp: Date
+        
+        struct PhotoRankingDetail {
+            let photo: Photo
+            let technicalScore: Float
+            let facialScore: Float
+            let contextScore: Float
+            let combinedScore: Float
+            let rankPosition: Int
+            let disqualificationReasons: [String]
+        }
+        
+        struct DecisionFactors {
+            let clusterType: ClusterType
+            let weightingUsed: RankingWeights
+            let facialAnalysisInfluence: Float
+            let cacheHit: Bool
+            let confidenceLevel: Float
+        }
+        
+        struct ProcessingStep {
+            let step: String
+            let duration: TimeInterval
+            let photosProcessed: Int
+            let cacheHits: Int
+        }
+    }
+    
+    /// Analytics data manager using Actor pattern for thread safety
+    private actor AnalyticsManager {
+        private var qualityMetrics: [Date: RankingQualityMetrics] = [:]
+        private var userSatisfactionData: [UserSatisfactionData] = []
+        private var debugLogs: [RankingDebugInfo] = []
+        private var abTestConfigs: [String: ABTestConfig] = [:]
+        private var abTestResults: [String: [UserSatisfactionData]] = [:]
+        
+        // Data retention: Keep 30 days of analytics data
+        private let dataRetentionDays: TimeInterval = 30 * 24 * 60 * 60
+        
+        func recordQualityMetrics(_ metrics: RankingQualityMetrics) {
+            qualityMetrics[Date()] = metrics
+            cleanupOldData()
+        }
+        
+        func recordUserSatisfaction(_ data: UserSatisfactionData) {
+            userSatisfactionData.append(data)
+            
+            // Also record for A/B test if applicable
+            if let activeTest = getActiveABTest() {
+                abTestResults[activeTest.testID, default: []].append(data)
+            }
+            
+            cleanupOldData()
+        }
+        
+        func recordDebugInfo(_ info: RankingDebugInfo) {
+            debugLogs.append(info)
+            
+            // Keep only last 1000 debug entries to prevent memory bloat
+            if debugLogs.count > 1000 {
+                debugLogs.removeFirst(debugLogs.count - 1000)
+            }
+        }
+        
+        func getLatestQualityMetrics() -> RankingQualityMetrics? {
+            return qualityMetrics.values.max(by: { $0.processingTime < $1.processingTime })
+        }
+        
+        func getUserSatisfactionSummary(days: Int = 7) -> (totalInteractions: Int, satisfactionRate: Float, overrideRate: Float) {
+            let cutoffDate = Date().addingTimeInterval(-TimeInterval(days * 24 * 60 * 60))
+            let recentData = userSatisfactionData.filter { $0.timestamp >= cutoffDate }
+            
+            let total = recentData.count
+            let satisfied = recentData.filter { 
+                $0.userAction == .accepted || $0.userAction == .shared || $0.userAction == .saved 
+            }.count
+            let overrides = recentData.filter { $0.userAction == .manualOverride }.count
+            
+            let satisfactionRate = total > 0 ? Float(satisfied) / Float(total) : 0.0
+            let overrideRate = total > 0 ? Float(overrides) / Float(total) : 0.0
+            
+            return (total, satisfactionRate, overrideRate)
+        }
+        
+        func setABTestConfig(_ config: ABTestConfig) {
+            abTestConfigs[config.testID] = config
+        }
+        
+        func getActiveABTest() -> ABTestConfig? {
+            return abTestConfigs.values.first { $0.isCurrentlyRunning }
+        }
+        
+        func getABTestResults(_ testID: String) -> [UserSatisfactionData] {
+            return abTestResults[testID] ?? []
+        }
+        
+        func getDebugInfo(for clusterID: UUID) -> [RankingDebugInfo] {
+            return debugLogs.filter { $0.clusterID == clusterID }
+        }
+        
+        private func cleanupOldData() {
+            let cutoffDate = Date().addingTimeInterval(-dataRetentionDays)
+            
+            // Clean quality metrics
+            qualityMetrics = qualityMetrics.filter { $0.key >= cutoffDate }
+            
+            // Clean user satisfaction data
+            userSatisfactionData = userSatisfactionData.filter { $0.timestamp >= cutoffDate }
+            
+            // Clean A/B test results
+            for (testID, results) in abTestResults {
+                abTestResults[testID] = results.filter { $0.timestamp >= cutoffDate }
+            }
+        }
+    }
+    
+    /// Thread-safe analytics manager
+    private let analyticsManager = AnalyticsManager()
+    
+    // MARK: - Cache Management Public Interface
+    
+    /// Clears cluster ranking cache to free memory when needed
+    func clearRankingCache() async {
+        await rankingCacheManager.clearAll()
+        print("🧹 ClusterCuration: Cleared ranking cache")
+    }
+    
+    /// Clears specific cluster from cache (useful when cluster content changes)
+    func clearClusterCache(_ clusterID: UUID) async {
+        await rankingCacheManager.clearCluster(clusterID)
+        print("🧹 ClusterCuration: Cleared cache for cluster \(clusterID)")
+    }
+    
+    /// Returns cache statistics for monitoring
+    func getRankingCacheStatistics() async -> (representativeCount: Int, rankingCount: Int, lastCleanup: Date?) {
+        return await rankingCacheManager.statistics
+    }
+    
+    /// Forces cache invalidation and cleanup
+    func performCacheCleanup() async {
+        await rankingCacheManager.invalidateExpiredEntries()
+        let stats = await rankingCacheManager.statistics
+        print("🧹 ClusterCuration: Manual cache cleanup complete. Cached items: \(stats.representativeCount)")
+    }
+    
+    // MARK: - Analytics and Validation Public Interface (Task 4.1)
+    
+    /// Records user satisfaction data for tracking thumbnail selection quality
+    func recordUserSatisfaction(
+        clusterID: UUID,
+        selectedPhoto: Photo,
+        userAction: UserSatisfactionData.UserAction,
+        sessionDuration: TimeInterval? = nil
+    ) async {
+        let deviceInfo = UserSatisfactionData.DeviceInfo(
+            model: await getDeviceModel(),
+            osVersion: await getOSVersion(),
+            appVersion: await getAppVersion()
+        )
+        
+        let satisfactionData = UserSatisfactionData(
+            clusterID: clusterID,
+            selectedRepresentative: selectedPhoto,
+            userAction: userAction,
+            timestamp: Date(),
+            sessionDuration: sessionDuration,
+            deviceInfo: deviceInfo
+        )
+        
+        await analyticsManager.recordUserSatisfaction(satisfactionData)
+        print("📊 ClusterCuration: Recorded user satisfaction - Action: \(userAction), Cluster: \(clusterID)")
+    }
+    
+    /// Generates comprehensive ranking quality metrics for algorithm validation
+    func generateRankingQualityMetrics(for clusters: [PhotoCluster]) async -> RankingQualityMetrics {
+        let startTime = Date()
+        
+        // Calculate various quality metrics
+        let accuracy = await calculateRankingAccuracy(clusters)
+        let confidence = await calculateAverageConfidence(clusters)
+        let faceQualityImprovement = await calculateFaceQualityImprovement(clusters)
+        let overallQualityImprovement = await calculateOverallQualityImprovement(clusters)
+        let consistencyScore = await calculateConsistencyScore(clusters)
+        let cacheStats = await rankingCacheManager.statistics
+        let cacheHitRate = cacheStats.representativeCount > 0 ? Float(cacheStats.representativeCount) / Float(clusters.count) : 0.0
+        let userSatisfactionSummary = await analyticsManager.getUserSatisfactionSummary()
+        let clusterTypeAccuracy = await calculateClusterTypeAccuracy(clusters)
+        
+        let processingTime = Date().timeIntervalSince(startTime)
+        
+        let metrics = RankingQualityMetrics(
+            accuracy: accuracy,
+            confidence: confidence,
+            faceQualityImprovement: faceQualityImprovement,
+            overallQualityImprovement: overallQualityImprovement,
+            consistencyScore: consistencyScore,
+            processingTime: processingTime,
+            cacheHitRate: cacheHitRate,
+            userOverrideRate: userSatisfactionSummary.overrideRate,
+            clusterTypeAccuracy: clusterTypeAccuracy
+        )
+        
+        await analyticsManager.recordQualityMetrics(metrics)
+        print("📊 ClusterCuration: Generated quality metrics - Grade: \(metrics.qualityGrade), Accuracy: \(String(format: "%.1f%%", accuracy * 100))")
+        
+        return metrics
+    }
+    
+    /// Sets up A/B testing configuration for ranking algorithm improvements
+    func configureABTest(
+        testID: String,
+        variantA: RankingWeights,
+        variantB: RankingWeights,
+        trafficSplit: Float = 0.5,
+        durationDays: Int = 14
+    ) async {
+        let config = ABTestConfig(
+            testID: testID,
+            isActive: true,
+            variantA: variantA,
+            variantB: variantB,
+            trafficSplit: trafficSplit,
+            startDate: Date(),
+            endDate: Date().addingTimeInterval(TimeInterval(durationDays * 24 * 60 * 60)),
+            minimumSampleSize: 100
+        )
+        
+        await analyticsManager.setABTestConfig(config)
+        print("🧪 ClusterCuration: Configured A/B test '\(testID)' for \(durationDays) days with \(Int(trafficSplit * 100))% traffic split")
+    }
+    
+    /// Gets A/B test results for analysis
+    func getABTestResults(_ testID: String) async -> [UserSatisfactionData] {
+        return await analyticsManager.getABTestResults(testID)
+    }
+    
+    /// Records detailed debug information for ranking decisions
+    func recordRankingDebugInfo(
+        clusterID: UUID,
+        selectedPhoto: Photo,
+        alternativePhotos: [RankingDebugInfo.PhotoRankingDetail],
+        decisionFactors: RankingDebugInfo.DecisionFactors,
+        processingSteps: [RankingDebugInfo.ProcessingStep]
+    ) async {
+        let debugInfo = RankingDebugInfo(
+            clusterID: clusterID,
+            selectedPhoto: selectedPhoto,
+            alternativePhotos: alternativePhotos,
+            decisionFactors: decisionFactors,
+            processingSteps: processingSteps,
+            timestamp: Date()
+        )
+        
+        await analyticsManager.recordDebugInfo(debugInfo)
+    }
+    
+    /// Gets debug information for a specific cluster
+    func getDebugInfo(for clusterID: UUID) async -> [RankingDebugInfo] {
+        return await analyticsManager.getDebugInfo(for: clusterID)
+    }
+    
+    /// Gets current user satisfaction summary
+    func getUserSatisfactionSummary(days: Int = 7) async -> (totalInteractions: Int, satisfactionRate: Float, overrideRate: Float) {
+        return await analyticsManager.getUserSatisfactionSummary(days: days)
+    }
+    
+    /// Gets latest ranking quality metrics
+    func getLatestQualityMetrics() async -> RankingQualityMetrics? {
+        return await analyticsManager.getLatestQualityMetrics()
+    }
+    
+    // MARK: - Private Analytics Helper Methods
+    
+    private func calculateRankingAccuracy(_ clusters: [PhotoCluster]) async -> Float {
+        // Compare automatic selections with user preferences based on historical data
+        let userSatisfactionSummary = await analyticsManager.getUserSatisfactionSummary(days: 30)
+        
+        // If we have user data, use satisfaction rate as accuracy proxy
+        if userSatisfactionSummary.totalInteractions > 0 {
+            return userSatisfactionSummary.satisfactionRate
+        }
+        
+        // Fallback: Use confidence-based estimation
+        let totalConfidence = clusters.compactMap { $0.rankingConfidence }.reduce(0, +)
+        return clusters.isEmpty ? 0.5 : totalConfidence / Float(clusters.count)
+    }
+    
+    private func calculateAverageConfidence(_ clusters: [PhotoCluster]) async -> Float {
+        let confidenceScores = clusters.compactMap { $0.rankingConfidence }
+        return confidenceScores.isEmpty ? 0.0 : confidenceScores.reduce(0, +) / Float(confidenceScores.count)
+    }
+    
+    private func calculateFaceQualityImprovement(_ clusters: [PhotoCluster]) async -> Float {
+        var totalImprovement: Float = 0.0
+        var clustersWithFaces = 0
+        
+        for cluster in clusters {
+            if let representative = cluster.clusterRepresentativePhoto,
+               let faceQuality = representative.faceQuality?.compositeScore {
+                
+                // Calculate average face quality of other photos in cluster
+                let otherPhotos = cluster.photos.filter { $0.id != representative.id }
+                let otherFaceQualities = otherPhotos.compactMap { $0.faceQuality?.compositeScore }
+                
+                if !otherFaceQualities.isEmpty {
+                    let averageOtherQuality = otherFaceQualities.reduce(0, +) / Float(otherFaceQualities.count)
+                    totalImprovement += max(0, faceQuality - averageOtherQuality)
+                    clustersWithFaces += 1
+                }
+            }
+        }
+        
+        return clustersWithFaces > 0 ? totalImprovement / Float(clustersWithFaces) : 0.0
+    }
+    
+    private func calculateOverallQualityImprovement(_ clusters: [PhotoCluster]) async -> Float {
+        var totalImprovement: Float = 0.0
+        var validClusters = 0
+        
+        for cluster in clusters {
+            if let representative = cluster.clusterRepresentativePhoto,
+               let repQuality = representative.overallScore?.overall {
+                
+                // Calculate average quality of other photos in cluster
+                let otherPhotos = cluster.photos.filter { $0.id != representative.id }
+                let otherQualities = otherPhotos.compactMap { $0.overallScore?.overall }
+                
+                if !otherQualities.isEmpty {
+                    let averageOtherQuality = otherQualities.reduce(0.0) { $0 + Double($1) } / Double(otherQualities.count)
+                    totalImprovement += max(0, Float(Double(repQuality) - averageOtherQuality))
+                    validClusters += 1
+                }
+            }
+        }
+        
+        return validClusters > 0 ? totalImprovement / Float(validClusters) : 0.0
+    }
+    
+    private func calculateConsistencyScore(_ clusters: [PhotoCluster]) async -> Float {
+        // Group clusters by type and calculate ranking consistency within each type
+        let clustersByType = Dictionary(grouping: clusters) { cluster in
+            // Simple cluster type detection based on photo count and content
+            cluster.photos.count >= 3 ? "group" : "single"
+        }
+        
+        var totalConsistency: Float = 0.0
+        var typeCount = 0
+        
+        for (_, typeClusters) in clustersByType {
+            if typeClusters.count > 1 {
+                let confidenceScores = typeClusters.compactMap { $0.rankingConfidence }
+                if confidenceScores.count > 1 {
+                    let variance = calculateVariance(values: confidenceScores)
+                    let consistency = max(0, 1.0 - variance) // Lower variance = higher consistency
+                    totalConsistency += consistency
+                    typeCount += 1
+                }
+            }
+        }
+        
+        return typeCount > 0 ? totalConsistency / Float(typeCount) : 0.8 // Default high consistency
+    }
+    
+    private func calculateClusterTypeAccuracy(_ clusters: [PhotoCluster]) async -> [ClusterType: Float] {
+        var typeAccuracy: [ClusterType: Float] = [:]
+        
+        // This is a simplified implementation - in a real scenario, you'd compare against ground truth
+        for clusterType in [ClusterType.portraitSession, .groupEvent, .landscapeCollection, .actionSequence, .mixedContent] {
+            let typeClusters = clusters.filter { cluster in
+                // Simple heuristic to determine cluster type
+                switch clusterType {
+                case .portraitSession, .groupEvent:
+                    return cluster.photos.allSatisfy { $0.faceQuality?.faceCount ?? 0 > 0 }
+                case .landscapeCollection:
+                    return cluster.photos.allSatisfy { $0.faceQuality?.faceCount ?? 0 == 0 }
+                case .actionSequence:
+                    return cluster.photos.count >= 5
+                case .mixedContent:
+                    return true // Fallback
+                }
+            }
+            
+            if !typeClusters.isEmpty {
+                let avgConfidence = typeClusters.compactMap { $0.rankingConfidence }.reduce(0, +) / Float(typeClusters.count)
+                typeAccuracy[clusterType] = avgConfidence
+            }
+        }
+        
+        return typeAccuracy
+    }
+    
+    // MARK: - Weight Refinement System (Task 4.2.4)
+    
+    /// Adaptive weights based on cluster content type and user feedback
+    struct AdaptiveRankingWeights {
+        let technicalWeight: Float
+        let facialWeight: Float
+        let contextualWeight: Float
+        let clusterType: ClusterType
+        let confidenceLevel: Float
+        
+        static func defaultWeights(for clusterType: ClusterType) -> AdaptiveRankingWeights {
+            switch clusterType {
+            case .groupEvent:
+                return AdaptiveRankingWeights(
+                    technicalWeight: 0.25,
+                    facialWeight: 0.60,
+                    contextualWeight: 0.15,
+                    clusterType: clusterType,
+                    confidenceLevel: 0.8
+                )
+            case .portraitSession:
+                return AdaptiveRankingWeights(
+                    technicalWeight: 0.30,
+                    facialWeight: 0.55,
+                    contextualWeight: 0.15,
+                    clusterType: clusterType,
+                    confidenceLevel: 0.8
+                )
+            case .landscapeCollection:
+                return AdaptiveRankingWeights(
+                    technicalWeight: 0.70,
+                    facialWeight: 0.05,
+                    contextualWeight: 0.25,
+                    clusterType: clusterType,
+                    confidenceLevel: 0.9
+                )
+            case .actionSequence:
+                return AdaptiveRankingWeights(
+                    technicalWeight: 0.45,
+                    facialWeight: 0.35,
+                    contextualWeight: 0.20,
+                    clusterType: clusterType,
+                    confidenceLevel: 0.7
+                )
+            case .mixedContent:
+                return AdaptiveRankingWeights(
+                    technicalWeight: 0.40,
+                    facialWeight: 0.40,
+                    contextualWeight: 0.20,
+                    clusterType: clusterType,
+                    confidenceLevel: 0.6
+                )
+            }
+        }
+    }
+    
+    /// Determines optimal ranking weights based on cluster content analysis
+    private func getOptimalRankingWeights(for cluster: PhotoCluster) async -> AdaptiveRankingWeights {
+        let clusterType = await analyzeClusterType(cluster)
+        var weights = AdaptiveRankingWeights.defaultWeights(for: clusterType)
+        
+        // Note: User feedback integration would require additional analytics infrastructure
+        // This is a placeholder for future user satisfaction tracking
+        
+        // Adjust weights based on content quality distribution
+        weights = adjustWeightsForContentQuality(weights, cluster: cluster)
+        
+        return weights
+    }
+    
+    /// Analyzes cluster content to determine primary type
+    private func analyzeClusterType(_ cluster: PhotoCluster) async -> ClusterType {
+        // Analyze cluster content manually for now
+        let photosWithScores = cluster.photos.compactMap { $0.overallScore }
+        guard !photosWithScores.isEmpty else { return .mixedContent }
+        
+        let facialScoreCount = photosWithScores.filter { $0.faces > 0 }.count
+        let faceRatio = Float(facialScoreCount) / Float(photosWithScores.count)
+        
+        if faceRatio > 0.8 {
+            return .groupEvent
+        } else if faceRatio < 0.3 {
+            return .landscapeCollection
+        } else {
+            return .mixedContent
+        }
+    }
+    
+    /// Refines weights based on user satisfaction feedback
+    private func refineWeightsBasedOnFeedback(
+        _ baseWeights: AdaptiveRankingWeights,
+        feedback: [UserSatisfactionData]
+    ) -> AdaptiveRankingWeights {
+        guard !feedback.isEmpty else { return baseWeights }
+        
+        // Calculate satisfaction metrics
+        let totalInteractions = feedback.count
+        let positiveInteractions = feedback.filter { data in
+            data.userAction == .accepted || 
+            data.userAction == .shared || 
+            data.userAction == .saved
+        }.count
+        
+        let satisfactionRate = Float(positiveInteractions) / Float(totalInteractions)
+        
+        // Adjust weights based on satisfaction
+        var adjustedWeights = baseWeights
+        
+        if satisfactionRate < 0.6 {
+            // Low satisfaction - adjust weights to emphasize different factors
+            switch baseWeights.clusterType {
+            case .groupEvent:
+                // Increase facial weight even more for group photos
+                adjustedWeights = AdaptiveRankingWeights(
+                    technicalWeight: baseWeights.technicalWeight * 0.8,
+                    facialWeight: min(0.8, baseWeights.facialWeight * 1.2),
+                    contextualWeight: baseWeights.contextualWeight,
+                    clusterType: baseWeights.clusterType,
+                    confidenceLevel: baseWeights.confidenceLevel * 0.9
+                )
+            case .landscapeCollection:
+                // Increase technical weight for landscapes
+                adjustedWeights = AdaptiveRankingWeights(
+                    technicalWeight: min(0.8, baseWeights.technicalWeight * 1.1),
+                    facialWeight: baseWeights.facialWeight,
+                    contextualWeight: baseWeights.contextualWeight * 0.9,
+                    clusterType: baseWeights.clusterType,
+                    confidenceLevel: baseWeights.confidenceLevel * 0.9
+                )
+            default:
+                // Boost contextual weight for portraits, action, and mixed content
+                adjustedWeights = AdaptiveRankingWeights(
+                    technicalWeight: baseWeights.technicalWeight * 0.9,
+                    facialWeight: baseWeights.facialWeight * 0.9,
+                    contextualWeight: min(0.4, baseWeights.contextualWeight * 1.2),
+                    clusterType: baseWeights.clusterType,
+                    confidenceLevel: baseWeights.confidenceLevel * 0.9
+                )
+            }
+        }
+        
+        return adjustedWeights
+    }
+    
+    /// Adjusts weights based on cluster content quality distribution
+    private func adjustWeightsForContentQuality(
+        _ baseWeights: AdaptiveRankingWeights,
+        cluster: PhotoCluster
+    ) -> AdaptiveRankingWeights {
+        let photos = cluster.photos
+        guard !photos.isEmpty else { return baseWeights }
+        
+        // Analyze quality variance in different dimensions
+        let technicalScores = photos.compactMap { $0.overallScore?.technical }
+        let facialScores = photos.compactMap { $0.overallScore?.faces }
+        let contextScores = photos.compactMap { $0.overallScore?.context }
+        
+        let technicalVariance = calculateVariance(values: technicalScores)
+        let facialVariance = calculateVariance(values: facialScores)
+        let contextVariance = calculateVariance(values: contextScores)
+        
+        var adjustedWeights = baseWeights
+        
+        // If there's high variance in a dimension, increase its weight
+        // This helps distinguish between photos when quality varies significantly
+        let varianceThreshold: Float = 0.1
+        
+        if technicalVariance > varianceThreshold {
+            adjustedWeights = AdaptiveRankingWeights(
+                technicalWeight: min(0.8, baseWeights.technicalWeight * 1.15),
+                facialWeight: baseWeights.facialWeight * 0.95,
+                contextualWeight: baseWeights.contextualWeight * 0.95,
+                clusterType: baseWeights.clusterType,
+                confidenceLevel: baseWeights.confidenceLevel
+            )
+        }
+        
+        if facialVariance > varianceThreshold && baseWeights.clusterType != .landscapeCollection {
+            adjustedWeights = AdaptiveRankingWeights(
+                technicalWeight: adjustedWeights.technicalWeight * 0.95,
+                facialWeight: min(0.8, adjustedWeights.facialWeight * 1.15),
+                contextualWeight: adjustedWeights.contextualWeight * 0.95,
+                clusterType: baseWeights.clusterType,
+                confidenceLevel: baseWeights.confidenceLevel
+            )
+        }
+        
+        // Normalize weights to ensure they sum to 1.0
+        let totalWeight = adjustedWeights.technicalWeight + adjustedWeights.facialWeight + adjustedWeights.contextualWeight
+        
+        return AdaptiveRankingWeights(
+            technicalWeight: adjustedWeights.technicalWeight / totalWeight,
+            facialWeight: adjustedWeights.facialWeight / totalWeight,
+            contextualWeight: adjustedWeights.contextualWeight / totalWeight,
+            clusterType: adjustedWeights.clusterType,
+            confidenceLevel: adjustedWeights.confidenceLevel
+        )
+    }
+    
+    // MARK: - Device Info Helper Methods
+    
+    private func getDeviceModel() async -> String {
+        return await MainActor.run {
+            var systemInfo = utsname()
+            uname(&systemInfo)
+            let modelCode = withUnsafePointer(to: &systemInfo.machine) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                    ptr in String.init(validatingUTF8: ptr)
+                }
+            }
+            return modelCode ?? "Unknown"
+        }
+    }
+    
+    private func getOSVersion() async -> String {
+        return await MainActor.run {
+            let os = ProcessInfo.processInfo.operatingSystemVersion
+            return "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        }
+    }
+    
+    private func getAppVersion() async -> String {
+        return await MainActor.run {
+            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+        }
+    }
+    
+    /// Helper function to calculate variance of float values
+    private func calculateVariance(values: [Float]) -> Float {
+        guard values.count > 1 else { return 0.0 }
+        
+        let mean = values.reduce(0.0, +) / Float(values.count)
+        let squaredDifferences = values.map { pow($0 - mean, 2) }
+        let variance = squaredDifferences.reduce(0.0, +) / Float(values.count)
+        
+        return variance
     }
     
     /// Gets all photos in a cluster sorted by quality (best first) with enhanced facial analysis
