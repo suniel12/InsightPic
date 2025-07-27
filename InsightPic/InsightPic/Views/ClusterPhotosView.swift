@@ -11,6 +11,7 @@ struct ClusterPhotosView: View {
     @State private var clusterRepresentatives: [ClusterRepresentative] = []
     @State private var selectedCluster: PhotoCluster?
     @State private var debugCluster: PhotoCluster?
+    @State private var perfectMomentCluster: PhotoCluster?
     
     private let columns = [
         GridItem(.adaptive(minimum: 120, maximum: 150), spacing: 2),
@@ -47,6 +48,9 @@ struct ClusterPhotosView: View {
                     },
                     onDebugTap: { cluster in
                         debugCluster = cluster
+                    },
+                    onPerfectMomentTap: { cluster in
+                        perfectMomentCluster = cluster
                     }
                 )
             }
@@ -109,6 +113,9 @@ struct ClusterPhotosView: View {
         }
         .sheet(item: $debugCluster) { cluster in
             FaceAnalysisDebugView(cluster: cluster, photoViewModel: photoViewModel)
+        }
+        .fullScreenCover(item: $perfectMomentCluster) { cluster in
+            PerfectMomentGeneratorView(cluster: cluster)
         }
     }
     
@@ -281,6 +288,7 @@ struct ClusterPhotosResultsView: View {
     let columns: [GridItem]
     let onClusterTap: (PhotoCluster) -> Void
     let onDebugTap: ((PhotoCluster) -> Void)?
+    let onPerfectMomentTap: ((PhotoCluster) -> Void)?
     
     var body: some View {
         VStack(spacing: 0) {
@@ -329,7 +337,8 @@ struct ClusterPhotosResultsView: View {
                                 representative: representative,
                                 photoViewModel: photoViewModel,
                                 onTap: { onClusterTap(representative.cluster) },
-                                onDebugTap: onDebugTap != nil ? { onDebugTap!(representative.cluster) } : nil
+                                onDebugTap: onDebugTap != nil ? { onDebugTap!(representative.cluster) } : nil,
+                                onPerfectMomentTap: onPerfectMomentTap != nil ? { onPerfectMomentTap!(representative.cluster) } : nil
                             )
                         }
                     }
@@ -347,6 +356,7 @@ struct ClusterThumbnailView: View {
     @ObservedObject var photoViewModel: PhotoLibraryViewModel
     let onTap: () -> Void
     let onDebugTap: (() -> Void)?
+    let onPerfectMomentTap: (() -> Void)?
     
     @State private var thumbnailImage: UIImage?
     @State private var isLoading = true
@@ -410,19 +420,34 @@ struct ClusterThumbnailView: View {
                 }
                 Spacer()
                 
-                // Importance indicator
-                if representative.isImportantMoment {
-                    HStack {
+                // Bottom indicators
+                HStack {
+                    // Importance indicator
+                    if representative.isImportantMoment {
                         Image(systemName: "star.fill")
                             .font(.system(size: 8))
                             .foregroundColor(.yellow)
                             .padding(2)
                             .background(.black.opacity(0.7))
                             .cornerRadius(2)
-                        Spacer()
                     }
-                    .padding(4)
+                    
+                    Spacer()
+                    
+                    // Perfect Moment button (US1.1, US1.2)
+                    if let onPerfectMomentTap = onPerfectMomentTap,
+                       representative.cluster.perfectMomentEligibility.isEligible {
+                        Button(action: onPerfectMomentTap) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white)
+                                .padding(3)
+                                .background(.purple.opacity(0.9))
+                                .cornerRadius(3)
+                        }
+                    }
                 }
+                .padding(4)
             }
         )
         .onTapGesture {

@@ -492,6 +492,23 @@ class PerfectMomentViewModel: ObservableObject {
         selectedResult = nil
     }
     
+    /// Uses the original photo instead of the generated perfect moment (US3.4)
+    func useOriginalPhoto(_ originalPhoto: Photo) {
+        // Clear current result to indicate user chose original
+        currentResult = nil
+        errorMessage = nil
+        
+        // Optionally show a confirmation message
+        progressText = "Using original photo instead"
+        
+        // Clear after brief display
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.progressText = ""
+        }
+        
+        print("User chose to use original photo instead of perfect moment")
+    }
+    
     // MARK: - Private Helper Methods
     
     private func resetWorkflowState() {
